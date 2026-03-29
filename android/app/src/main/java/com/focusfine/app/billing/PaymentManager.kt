@@ -12,6 +12,7 @@ import kotlinx.coroutines.launch
 
 /**
  * Manages Google Play Billing integration for in-app purchases
+ * Compatible with Google Play Billing Library v5.1+
  */
 class PaymentManager(private val context: Context) {
 
@@ -40,7 +41,7 @@ class PaymentManager(private val context: Context) {
             override fun onBillingSetupFinished(billingResult: BillingResult) {
                 if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
                     Log.d(TAG, "Billing client setup successful")
-                    querySkuDetails()
+                    queryProductDetails()
                 } else {
                     Log.e(TAG, "Billing setup failed: ${billingResult.debugMessage}")
                 }
@@ -53,42 +54,58 @@ class PaymentManager(private val context: Context) {
         })
     }
 
-    private fun querySkuDetails() {
-        val skuList = listOf(QUICK_UNLOCK_SKU, EXTENDED_UNLOCK_SKU, DAILY_PASS_SKU)
-        val params = SkuDetailsParams.newBuilder()
-            .setSkusList(skuList)
-            .setType(BillingClient.SkuType.INAPP)
+    private fun queryProductDetails() {
+        val productList = listOf(QUICK_UNLOCK_SKU, EXTENDED_UNLOCK_SKU, DAILY_PASS_SKU)
+        val params = QueryProductDetailsParams.newBuilder()
+            .setProductList(productList.map { productId ->
+                QueryProductDetailsParams.Product.newBuilder()
+                    .setProductId(productId)
+                    .setProductType(BillingClient.ProductType.INAPP)
+                    .build()
+            })
             .build()
 
-        billingClient?.querySkuDetailsAsync(params) { billingResult, skuDetailsList ->
+        billingClient?.queryProductDetailsAsync(params) { billingResult, productDetailsList ->
             if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
-                Log.d(TAG, "SKU details queried successfully: ${skuDetailsList?.size ?: 0} items")
-                skuDetailsList?.forEach { sku ->
-                    Log.d(TAG, "SKU: ${sku.sku} - ${sku.price}")
+                Log.d(TAG, "Product details queried successfully: ${productDetailsList?.size ?: 0} items")
+                productDetailsList?.forEach { product ->
+                    Log.d(TAG, "Product: ${product.productId} - ${product.oneTimePurchaseOfferDetails?.formattedPrice}")
                 }
             } else {
-                Log.e(TAG, "Failed to query SKU details: ${billingResult.debugMessage}")
+                Log.e(TAG, "Failed to query product details: ${billingResult.debugMessage}")
             }
         }
     }
 
-    fun launchPurchaseFlow(activity: Activity, skuId: String) {
-        val queryParams = SkuDetailsParams.newBuilder()
-            .setSkusList(listOf(skuId))
-            .setType(BillingClient.SkuType.INAPP)
+    fun launchPurchaseFlow(activity: Activity, productId: String) {
+        val params = QueryProductDetailsParams.newBuilder()
+            .setProductList(listOf(
+                QueryProductDetailsParams.Product.newBuilder()
+                    .setProductId(productId)
+                    .setProductType(BillingClient.ProductType.INAPP)
+                    .build()
+            ))
             .build()
 
-        billingClient?.querySkuDetailsAsync(queryParams) { billingResult, skuDetailsList ->
-            if (billingResult.responseCode == BillingClient.BillingResponseCode.OK && !skuDetailsList.isNullOrEmpty()) {
-                val skuDetails = skuDetailsList[0]
-                val flowParams = BillingFlowParams.newBuilder()
-                    .setSkuDetails(skuDetails)
-                    .build()
+        billingClient?.queryProductDetailsAsync(params) { billingResult, productDetailsList ->
+            if (billingResult.responseCode == BillingClient.BillingResponseCode.OK && !productDetailsList.isNullOrEmpty()) {
+                val productDetails = productDetailsList[0]
+                val offerToken = productDetails.oneTimePurchaseOfferDetails?.offerToken
 
-                billingClient?.launchBillingFlow(activity, flowParams)
-                Log.d(TAG, "Billing flow launched for SKU: $skuId")
+                if (offerToken != null) {
+                    val flowParams = BillingFlowParams.newBuilder()
+                        .addProduct(productId, offerToken)
+                        .build()
+
+                    billingClient?.launchBillingFlow(activity, flowParams)
+                    Log.d(TAG, "Billing flow launched for product: $productId")
+                } else {
+                    Log.e(TAG, "Offer token not found for product: $productId")
+                    purchaseListener?.invoke(false, null)
+                }
             } else {
-                Log.e(TAG, "Failed to query SKU details for purchase: ${billingResult.debugMessage}")
+                Log.e(TAG, "Failed to query product details for purchase: ${billingResult.debugMessage}")
+                purchaseListener?.invoke(false, null)
             }
         }
     }

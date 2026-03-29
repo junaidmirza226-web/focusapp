@@ -71,8 +71,7 @@
         android:text="Pay $5.00 for 1 hour"
         android:textAllCaps="false"
         android:textColor="#FFFFFF"
-        android:textSize="16sp"
-        android:visibility="gone" />
+        android:textSize="16sp" />
 
     <Button
         android:id="@+id/btn_daily_pass"
@@ -83,8 +82,7 @@
         android:text="Pay $20.00 for 24 hours"
         android:textAllCaps="false"
         android:textColor="#FFFFFF"
-        android:textSize="16sp"
-        android:visibility="gone" />
+        android:textSize="16sp" />
 
     <Space
         android:layout_width="match_parent"

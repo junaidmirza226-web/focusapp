@@ -65,6 +65,38 @@ class OverlayActivity : AppCompatActivity() {
             }
         }
 
+        // Extended Unlock Button ($5 for 1 hour)
+        findViewById<Button>(R.id.btn_extended_unlock).apply {
+            visibility = android.view.View.VISIBLE
+            text = "Pay \$5.00 for 1 hour"
+            setOnClickListener {
+                if (!isProcessing) {
+                    isProcessing = true
+                    Log.d(TAG, "Launching payment flow for Extended Unlock")
+                    paymentManager.launchPurchaseFlow(
+                        this@OverlayActivity,
+                        PaymentManager.EXTENDED_UNLOCK_SKU
+                    )
+                }
+            }
+        }
+
+        // Daily Pass Button ($20 for 24 hours)
+        findViewById<Button>(R.id.btn_daily_pass).apply {
+            visibility = android.view.View.VISIBLE
+            text = "Pay \$20.00 for 24 hours"
+            setOnClickListener {
+                if (!isProcessing) {
+                    isProcessing = true
+                    Log.d(TAG, "Launching payment flow for Daily Pass")
+                    paymentManager.launchPurchaseFlow(
+                        this@OverlayActivity,
+                        PaymentManager.DAILY_PASS_SKU
+                    )
+                }
+            }
+        }
+
         // Close App Button
         findViewById<Button>(R.id.btn_close).setOnClickListener {
             goHome()
