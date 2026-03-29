@@ -1,0 +1,16 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(./gradlew build:*)",
+      "mcp__Claude_Preview__preview_start",
+      "Bash(npm run:*)",
+      "Bash(npm --version)",
+      "Bash(curl -L -o gradle-wrapper.jar \"https://repo.gradle.org/gradle/gradle-8.5-bin/gradle-8.5/lib/gradle-wrapper.jar\")",
+      "Bash(powershell -Command \"Invoke-WebRequest -Uri ''''https://services.gradle.org/distributions/gradle-8.5-bin.zip'''' -OutFile ''''D:/gradle-temp.zip'''' -ErrorAction Stop\")",
+      "Read(//d//**)",
+      "Bash(powershell -Command \"Expand-Archive -Path ''''D:/gradle-temp.zip'''' -DestinationPath ''''D:/'''' -Force\")",
+      "Bash(mv \"D:/gradle-8.5\" \"D:/gradle\")",
+      "Bash(rm \"D:/gradle-temp.zip\")"
+    ]
+  }
+}

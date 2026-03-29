@@ -1,0 +1,79 @@
+{
+  "appName": "FocusFine",
+  "packageName": "com.focusfine.app",
+  "version": "1.0",
+  "versionCode": 1,
+  "category": "Productivity",
+  "contentRating": "Everyone",
+  "description": "FocusFine is a digital discipline app that helps you reclaim control of your time. Set daily limits on distracting apps, and if you exceed them, you'll need to pay $1 to unlock access.",
+  "longDescription": "FocusFine - Digital Discipline Made Simple\n\nLet's be honest: social media apps are engineered to be addictive. FocusFine makes excessive usage costly—literally.\n\n✨ How it works:\n• Set daily time limits on the apps that distract you most (Instagram, TikTok, YouTube, Twitter, WhatsApp)\n• When you hit your limit, FocusFine locks the app with an unbypassable overlay\n• Pay $1 for 15 minutes, $5 for 1 hour, or $20 for 24 hours of unlimited access\n• Track your spending, see your improvement, and build a streak of discipline\n\n📊 Real-Time Analytics:\n• Focus Score: Track your discipline on a 0-100 scale\n• Hourly Heatmap: See exactly when you're most vulnerable\n• Weekly Trends: Watch your improvements over time\n• Money Saved: Visualize the cash you're keeping by saying no\n\n🎯 Advanced Features:\n• Strict Mode: Lock yourself out until 5 PM to enforce real discipline\n• Perfect Day Streaks: Build momentum with consecutive limit-free days\n• Weekly Insights: Discover your peak distraction times and top distracting apps\n• Dark Mode: Eye-friendly late-night monitoring\n\n⚡ Why FocusFine Works:\nMost apps try to use willpower. FocusFine uses your wallet. When money is on the line, discipline feels different. No tricks, no complexity—just financial friction against your worst impulses.\n\nIdeal for:\n• Students preparing for exams\n• Professionals fighting productivity loss\n• Parents worried about screen time\n• Anyone ready to reclaim their attention\n\nFocusFine is completely transparent about permissions:\n• Usage Access: To monitor app usage time\n• Overlay Permission: To show the unbypassable lock screen\n• Background Monitoring: To detect limit violations even when you're away\n\nStart your discipline journey today. Your focus is worth it.",
+  "shortDescription": "Control your app usage with financial penalties. Set limits, pay to unlock, and reclaim your focus.",
+  "website": "https://focusfine.app",
+  "email": "support@focusfine.app",
+  "privacyPolicyUrl": "https://focusfine.app/privacy",
+  "termsOfServiceUrl": "https://focusfine.app/terms",
+  "phoneNumber": null,
+  "isKidsApp": false,
+  "requiresAgeGate": false,
+  "adsPolicy": "This app does not contain ads",
+  "permissions": [
+    "PACKAGE_USAGE_STATS",
+    "SYSTEM_ALERT_WINDOW",
+    "FOREGROUND_SERVICE",
+    "REQUEST_IGNORE_BATTERY_OPTIMIZATIONS",
+    "BILLING"
+  ],
+  "targetAudience": ["Productivity enthusiasts", "Students", "Professionals", "Time management focused users"],
+  "keywords": ["focus", "productivity", "discipline", "app limits", "screen time", "digital wellness", "habit tracking"],
+  "screenshots": {
+    "phone": [
+      {
+        "filename": "screenshot_1_dashboard.png",
+        "description": "Dashboard showing Focus Score and Active Limits"
+      },
+      {
+        "filename": "screenshot_2_analytics.png",
+        "description": "Weekly analytics with hourly heatmap and trends"
+      },
+      {
+        "filename": "screenshot_3_lock_screen.png",
+        "description": "Unbypassable lock screen when limit is reached"
+      },
+      {
+        "filename": "screenshot_4_payment.png",
+        "description": "Quick unlock options with flexible payment plans"
+      }
+    ],
+    "feature": {
+      "filename": "feature_graphic.png",
+      "description": "FocusFine - Digital Discipline Made Simple"
+    },
+    "icon": {
+      "filename": "app_icon_512.png",
+      "description": "App icon"
+    }
+  },
+  "rating": "PG-13",
+  "contentDescriptor": {
+    "violence": false,
+    "sexualContent": false,
+    "profanity": false,
+    "alcoholTobaccoUse": false,
+    "gambling": false
+  },
+  "changelog": [
+    {
+      "version": "1.0",
+      "releaseDate": "2026-03-29",
+      "notes": "Initial release with core features: app limiting, enforcement, analytics, and payment integration"
+    }
+  ],
+  "contactAddress": {
+    "country": "US",
+    "businessName": "FocusFine",
+    "streetAddress": "1 Digital Way",
+    "city": "San Francisco",
+    "state": "CA",
+    "postalCode": "94102"
+  }
+}
