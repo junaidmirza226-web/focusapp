@@ -22,15 +22,33 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
+        // Permission checking and service start handled in onResume()
+    }
 
-        // Check if onboarding is needed
-        if (!FocusFineApp.preferences.isOnboardingComplete) {
-            // TODO: Start onboarding flow
-            // For now, request necessary permissions
-            requestRequiredPermissions()
-        } else {
-            // Start monitoring service if not already running
+    override fun onResume() {
+        super.onResume()
+        checkPermissionsAndProceed()
+    }
+
+    /**
+     * Called on every resume (app start, return from settings screen).
+     * Requests permissions one at a time sequentially, then starts service.
+     */
+    private fun checkPermissionsAndProceed() {
+        if (FocusFineApp.preferences.isOnboardingComplete) {
             startMonitoringServiceIfNeeded()
+            return
+        }
+
+        when {
+            !hasUsageAccessPermission() -> requestUsageAccessPermission()
+            !hasOverlayPermissionGranted() -> requestOverlayPermission()
+            else -> {
+                // All required permissions granted
+                FocusFineApp.preferences.isOnboardingComplete = true
+                startMonitoringServiceIfNeeded()
+                Toast.makeText(this, "FocusFine is now active!", Toast.LENGTH_SHORT).show()
+            }
         }
     }
 
