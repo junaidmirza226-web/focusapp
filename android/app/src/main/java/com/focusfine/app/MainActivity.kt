@@ -17,6 +17,7 @@ class MainActivity : AppCompatActivity() {
     companion object {
         private const val USAGE_ACCESS_PERMISSION_CODE = 100
         private const val OVERLAY_PERMISSION_CODE = 101
+        private const val NOTIFICATION_PERMISSION_CODE = 102
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -43,6 +44,7 @@ class MainActivity : AppCompatActivity() {
         when {
             !hasUsageAccessPermission() -> requestUsageAccessPermission()
             !hasOverlayPermissionGranted() -> requestOverlayPermission()
+            !hasNotificationPermission() -> requestNotificationPermission()
             else -> {
                 // All required permissions granted
                 FocusFineApp.preferences.isOnboardingComplete = true
@@ -131,6 +133,39 @@ class MainActivity : AppCompatActivity() {
                 startActivity(intent)
                 FocusFineApp.preferences.hasIgnoreBatteryOptimization = true
             }
+        }
+    }
+
+    private fun hasNotificationPermission(): Boolean {
+        return if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ContextCompat.checkSelfPermission(
+                this,
+                android.Manifest.permission.POST_NOTIFICATIONS
+            ) == PackageManager.PERMISSION_GRANTED
+        } else {
+            true // Not required before Android 13
+        }
+    }
+
+    private fun requestNotificationPermission() {
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            ActivityCompat.requestPermissions(
+                this,
+                arrayOf(android.Manifest.permission.POST_NOTIFICATIONS),
+                NOTIFICATION_PERMISSION_CODE
+            )
+        }
+    }
+
+    override fun onRequestPermissionsResult(
+        requestCode: Int,
+        permissions: Array<out String>,
+        grantResults: IntArray
+    ) {
+        super.onRequestPermissionsResult(requestCode, permissions, grantResults)
+        // Re-run the permission flow after user responds to notification dialog
+        if (requestCode == NOTIFICATION_PERMISSION_CODE) {
+            checkPermissionsAndProceed()
         }
     }
 
