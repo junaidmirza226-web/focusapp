@@ -26,6 +26,7 @@ class PaymentManager(private val context: Context) {
     private var billingClient: BillingClient? = null
     private val coroutineScope = CoroutineScope(Dispatchers.Main)
     private var purchaseListener: ((Boolean, Payment?) -> Unit)? = null
+    private var currentLockedPackage = ""
 
     init {
         setupBillingClient()
@@ -77,7 +78,8 @@ class PaymentManager(private val context: Context) {
         }
     }
 
-    fun launchPurchaseFlow(activity: Activity, productId: String) {
+    fun launchPurchaseFlow(activity: Activity, productId: String, lockedPackage: String = "") {
+        currentLockedPackage = lockedPackage
         val params = QueryProductDetailsParams.newBuilder()
             .setProductList(listOf(
                 QueryProductDetailsParams.Product.newBuilder()
@@ -212,9 +214,7 @@ class PaymentManager(private val context: Context) {
     }
 
     private fun getPurchasePackageName(skuId: String): String {
-        // This would be set dynamically based on which app was locked
-        // For now, return a placeholder
-        return "locked_app_package"
+        return currentLockedPackage
     }
 
     private fun getPriceAndDuration(skuId: String): Pair<Double, Int> {

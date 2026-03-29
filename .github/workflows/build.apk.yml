@@ -21,6 +21,18 @@ jobs:
           java-version: '17'
           distribution: 'temurin'
 
+      - name: Set up Node.js
+        uses: actions/setup-node@v3
+        with:
+          node-version: '20'
+
+      - name: Build React App
+        run: |
+          npm install
+          npm run build
+          mkdir -p android/app/src/main/assets
+          cp -r dist/. android/app/src/main/assets/
+
       - name: Set up Android SDK
         uses: android-actions/setup-android@v2
 

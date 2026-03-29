@@ -53,6 +53,9 @@ class UsageMonitorService : Service() {
         } else {
             startForeground(1, createNotification())
         }
+        // Remove any existing callbacks before re-posting to prevent duplicate polling loops
+        // when the service is started multiple times (e.g., from onResume + onDestroy)
+        handler.removeCallbacks(monitorRunnable)
         handler.post(monitorRunnable)
         Log.d("UsageMonitor", "Service started and monitoring enabled")
         return START_STICKY
@@ -98,10 +101,20 @@ class UsageMonitorService : Service() {
                                 ))
                             }
 
-                            // Check if over limit (only lock once per session)
-                            if (timeUsedMinutes > settings.dailyLimitMinutes && !lockedAppsThisSession.contains(packageName)) {
-                                lockedAppsThisSession.add(packageName)
-                                launchLockScreen(packageName)
+                            // Check if over limit
+                            if (timeUsedMinutes > settings.dailyLimitMinutes) {
+                                val now = System.currentTimeMillis()
+                                val activeUnlocks = db.paymentDao().getActiveUnlocks(packageName, now)
+                                if (activeUnlocks.isEmpty()) {
+                                    // No active paid unlock — lock if not already locked this session
+                                    if (!lockedAppsThisSession.contains(packageName)) {
+                                        lockedAppsThisSession.add(packageName)
+                                        launchLockScreen(packageName)
+                                    }
+                                } else {
+                                    // Active unlock exists — clear from locked set so re-lock fires after expiry
+                                    lockedAppsThisSession.remove(packageName)
+                                }
                             }
                         }
                     }

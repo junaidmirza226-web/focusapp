@@ -36,7 +36,7 @@ class FocusFineApp : Application() {
             val channel = NotificationChannel(
                 NOTIFICATION_CHANNEL_ID,
                 "FocusFine Monitoring",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_DEFAULT
             ).apply {
                 description = "Notifications for app usage monitoring"
                 setShowBadge(false)

@@ -59,7 +59,8 @@ class OverlayActivity : AppCompatActivity() {
                     Log.d(TAG, "Launching payment flow for Quick Unlock")
                     paymentManager.launchPurchaseFlow(
                         this@OverlayActivity,
-                        PaymentManager.QUICK_UNLOCK_SKU
+                        PaymentManager.QUICK_UNLOCK_SKU,
+                        packageName
                     )
                 }
             }
@@ -75,7 +76,8 @@ class OverlayActivity : AppCompatActivity() {
                     Log.d(TAG, "Launching payment flow for Extended Unlock")
                     paymentManager.launchPurchaseFlow(
                         this@OverlayActivity,
-                        PaymentManager.EXTENDED_UNLOCK_SKU
+                        PaymentManager.EXTENDED_UNLOCK_SKU,
+                        packageName
                     )
                 }
             }
@@ -91,7 +93,8 @@ class OverlayActivity : AppCompatActivity() {
                     Log.d(TAG, "Launching payment flow for Daily Pass")
                     paymentManager.launchPurchaseFlow(
                         this@OverlayActivity,
-                        PaymentManager.DAILY_PASS_SKU
+                        PaymentManager.DAILY_PASS_SKU,
+                        packageName
                     )
                 }
             }

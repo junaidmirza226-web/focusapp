@@ -10,6 +10,8 @@ import androidx.core.content.ContextCompat
 import android.app.AppOpsManager
 import android.content.Context
 import android.provider.Settings
+import android.webkit.WebView
+import android.webkit.WebSettings
 import android.widget.Toast
 
 class MainActivity : AppCompatActivity() {
@@ -23,7 +25,19 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-        // Permission checking and service start handled in onResume()
+
+        // Setup WebView to display the React dashboard
+        val webView = findViewById<WebView>(R.id.webview)
+        webView.settings.apply {
+            javaScriptEnabled = true
+            domStorageEnabled = true
+            allowFileAccess = true
+            allowContentAccess = true
+            // Allow file:// URLs to load other file:// resources (needed for Vite asset chunks)
+            @Suppress("SetJavaScriptEnabled")
+            allowFileAccessFromFileURLs = true
+        }
+        webView.loadUrl("file:///android_asset/index.html")
     }
 
     override fun onResume() {
@@ -54,27 +68,6 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    private fun requestRequiredPermissions() {
-        // Check and request PACKAGE_USAGE_STATS permission
-        if (!hasUsageAccessPermission()) {
-            requestUsageAccessPermission()
-        }
-
-        // Check and request SYSTEM_ALERT_WINDOW (overlay) permission
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            if (!Settings.canDrawOverlays(this)) {
-                requestOverlayPermission()
-            }
-        }
-
-        // Check and request IGNORE_BATTERY_OPTIMIZATIONS
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-            if (!hasIgnoreBatteryOptimizationPermission()) {
-                requestIgnoreBatteryOptimization()
-            }
-        }
-    }
-
     private fun hasUsageAccessPermission(): Boolean {
         return try {
             val appOps = getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
@@ -97,7 +90,6 @@ class MainActivity : AppCompatActivity() {
         ).show()
         val intent = Intent(Settings.ACTION_USAGE_ACCESS_SETTINGS)
         startActivityForResult(intent, USAGE_ACCESS_PERMISSION_CODE)
-        FocusFineApp.preferences.hasUsageAccessPermission = true
     }
 
     private fun requestOverlayPermission() {
@@ -107,7 +99,6 @@ class MainActivity : AppCompatActivity() {
                 android.net.Uri.parse("package:$packageName")
             )
             startActivityForResult(intent, OVERLAY_PERMISSION_CODE)
-            FocusFineApp.preferences.hasOverlayPermission = true
         }
     }
 
@@ -170,14 +161,13 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun startMonitoringServiceIfNeeded() {
-        if (!FocusFineApp.preferences.isMonitoringServiceRunning) {
-            val serviceIntent = Intent(this, UsageMonitorService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(serviceIntent)
-            } else {
-                startService(serviceIntent)
-            }
-            FocusFineApp.preferences.isMonitoringServiceRunning = true
+        // Always start (or restart) the service — safe because UsageMonitorService
+        // removes and re-posts the runnable in onStartCommand, preventing duplicate loops
+        val serviceIntent = Intent(this, UsageMonitorService::class.java)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+            startForegroundService(serviceIntent)
+        } else {
+            startService(serviceIntent)
         }
     }
 
@@ -200,12 +190,8 @@ class MainActivity : AppCompatActivity() {
                 }
             }
         }
-
-        // After all permissions, mark onboarding as complete
-        if (hasUsageAccessPermission() && hasOverlayPermissionGranted()) {
-            FocusFineApp.preferences.isOnboardingComplete = true
-            startMonitoringServiceIfNeeded()
-        }
+        // onResume() will be called automatically after returning from settings,
+        // which triggers checkPermissionsAndProceed() to continue the sequence
     }
 
     private fun hasOverlayPermissionGranted(): Boolean {
