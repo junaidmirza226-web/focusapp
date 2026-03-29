@@ -25,7 +25,7 @@ jobs:
       - name: Build APK with Gradle
         run: |
           cd android
-          gradle assembleDebug
+          gradle assembleDebug --warning-mode all --stacktrace
 
       - name: Upload APK to artifacts
         uses: actions/upload-artifact@v4
