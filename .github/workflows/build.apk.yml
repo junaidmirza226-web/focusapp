@@ -31,7 +31,7 @@ jobs:
           ./gradlew assembleDebug
 
       - name: Upload APK to artifacts
-        uses: actions/upload-artifact@v3
+        uses: actions/upload-artifact@v4
         with:
           name: focusfine-debug-apk
           path: android/app/build/outputs/apk/debug/app-debug.apk
@@ -39,27 +39,14 @@ jobs:
 
       - name: Create Release
         if: success()
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: ncipollo/release-action@v1
         with:
-          tag_name: build-${{ github.run_number }}
-          release_name: FocusFine Debug APK - Build ${{ github.run_number }}
+          artifacts: "android/app/build/outputs/apk/debug/app-debug.apk"
+          tag: build-${{ github.run_number }}
+          name: FocusFine Debug APK - Build ${{ github.run_number }}
           body: |
             APK built successfully!
             - Build Number: ${{ github.run_number }}
             - Commit: ${{ github.sha }}
-            - Built on: ${{ github.event.head_commit.timestamp }}
           draft: false
           prerelease: true
-
-      - name: Upload to Release
-        if: success()
-        uses: actions/upload-release-asset@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        with:
-          upload_url: ${{ steps.create_release.outputs.upload_url }}
-          asset_path: android/app/build/outputs/apk/debug/app-debug.apk
-          asset_name: focusfine-app-debug.apk
-          asset_content_type: application/vnd.android.package-archive
