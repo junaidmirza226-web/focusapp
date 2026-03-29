@@ -90,19 +90,20 @@ class PaymentManager(private val context: Context) {
         billingClient?.queryProductDetailsAsync(params) { billingResult, productDetailsList ->
             if (billingResult.responseCode == BillingClient.BillingResponseCode.OK && !productDetailsList.isNullOrEmpty()) {
                 val productDetails = productDetailsList[0]
-                val offerToken = productDetails.oneTimePurchaseOfferDetails?.offerToken
 
-                if (offerToken != null) {
-                    val flowParams = BillingFlowParams.newBuilder()
-                        .addProduct(productId, offerToken)
+                // INAPP (one-time) purchases do NOT use offerToken — that is subscriptions only
+                val productDetailsParamsList = listOf(
+                    BillingFlowParams.ProductDetailsParams.newBuilder()
+                        .setProductDetails(productDetails)
                         .build()
+                )
 
-                    billingClient?.launchBillingFlow(activity, flowParams)
-                    Log.d(TAG, "Billing flow launched for product: $productId")
-                } else {
-                    Log.e(TAG, "Offer token not found for product: $productId")
-                    purchaseListener?.invoke(false, null)
-                }
+                val flowParams = BillingFlowParams.newBuilder()
+                    .setProductDetailsParamsList(productDetailsParamsList)
+                    .build()
+
+                billingClient?.launchBillingFlow(activity, flowParams)
+                Log.d(TAG, "Billing flow launched for product: $productId")
             } else {
                 Log.e(TAG, "Failed to query product details for purchase: ${billingResult.debugMessage}")
                 purchaseListener?.invoke(false, null)
@@ -182,8 +183,9 @@ class PaymentManager(private val context: Context) {
 
     private suspend fun processPurchaseInDatabase(purchase: Purchase) {
         try {
-            val packageName = getPurchasePackageName(purchase.sku)
-            val (amount, durationMinutes) = getPriceAndDuration(purchase.sku)
+            val productId = purchase.products.firstOrNull() ?: ""
+            val packageName = getPurchasePackageName(productId)
+            val (amount, durationMinutes) = getPriceAndDuration(productId)
 
             val payment = Payment(
                 packageName = packageName,
@@ -201,7 +203,7 @@ class PaymentManager(private val context: Context) {
             val prefs = FocusFineApp.preferences
             prefs.totalSpentToday += amount
 
-            Log.d(TAG, "Purchase recorded in database: SKU=${purchase.sku}, Amount=\$$amount")
+            Log.d(TAG, "Purchase recorded in database: productId=$productId, Amount=\$$amount")
             purchaseListener?.invoke(true, payment)
         } catch (e: Exception) {
             Log.e(TAG, "Error processing purchase in database", e)
@@ -226,7 +228,7 @@ class PaymentManager(private val context: Context) {
 
     fun restorePurchases() {
         billingClient?.queryPurchasesAsync(QueryPurchasesParams.newBuilder()
-            .setProductType(BillingClient.SkuType.INAPP)
+            .setProductType(BillingClient.ProductType.INAPP)
             .build()) { billingResult, purchases ->
             if (billingResult.responseCode == BillingClient.BillingResponseCode.OK) {
                 Log.d(TAG, "Restored ${purchases.size} purchases")
