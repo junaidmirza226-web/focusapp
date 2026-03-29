@@ -2,6 +2,8 @@ package com.focusfine.app
 
 import android.app.Service
 import android.content.Intent
+import android.content.pm.ServiceInfo
+import android.os.Build
 import android.os.IBinder
 import android.app.usage.UsageStatsManager
 import android.content.Context
@@ -45,7 +47,12 @@ class UsageMonitorService : Service() {
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
-        startForeground(1, createNotification())
+        // Android 14+ requires specifying the foreground service type explicitly
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            startForeground(1, createNotification(), ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC)
+        } else {
+            startForeground(1, createNotification())
+        }
         handler.post(monitorRunnable)
         Log.d("UsageMonitor", "Service started and monitoring enabled")
         return START_STICKY
