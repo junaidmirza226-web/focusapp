@@ -31,7 +31,11 @@ abstract class AppDatabase : RoomDatabase() {
                     context.applicationContext,
                     AppDatabase::class.java,
                     "focusfine_database"
-                ).build()
+                )
+                    // Wipe and recreate the DB if the schema changes without a migration.
+                    // Safe for testing; replace with a proper Migration object before Play Store launch.
+                    .fallbackToDestructiveMigration()
+                    .build()
                 INSTANCE = instance
                 instance
             }

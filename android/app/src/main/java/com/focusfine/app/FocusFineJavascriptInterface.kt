@@ -96,7 +96,9 @@ class FocusFineJavascriptInterface(
             .filter { info ->
                 val pkg = info.activityInfo.packageName
                 if (pkg == context.packageName) return@filter false
-                val appInfo = try { pm.getApplicationInfo(pkg, 0) } catch (e: Exception) { return@filter false }
+                // Use the ApplicationInfo already inside ResolveInfo — avoids a separate
+                // pm.getApplicationInfo() call that throws on Android 11+ for some packages
+                val appInfo = info.activityInfo.applicationInfo
                 val isSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
                 val isUpdated = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
                 // Include user-installed apps and updated system apps (YouTube, Chrome, etc.)

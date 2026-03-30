@@ -55,7 +55,9 @@ class UsageMonitorService : Service() {
         try {
             val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
             val now = System.currentTimeMillis()
-            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - 86_400_000L, now)
+            // INTERVAL_BEST requests the most granular/recent data available.
+            // INTERVAL_DAILY is too stale for short limits (can lag several minutes behind).
+            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_BEST, now - 86_400_000L, now)
                 ?: return
 
             coroutineScope.launch {
