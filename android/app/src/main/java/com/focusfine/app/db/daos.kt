@@ -44,6 +44,9 @@ interface PaymentDao {
 
     @Query("DELETE FROM payments WHERE expiresAt < :currentTime")
     suspend fun deleteExpiredUnlocks(currentTime: Long)
+
+    @Query("SELECT COUNT(*) FROM payments WHERE packageName = :packageName AND unlockedAt >= :todayStart")
+    suspend fun getUnlockCountToday(packageName: String, todayStart: Long): Int
 }
 
 @Dao
