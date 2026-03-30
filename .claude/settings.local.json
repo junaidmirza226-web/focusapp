@@ -11,7 +11,9 @@
       "Bash(powershell -Command \"Expand-Archive -Path ''''D:/gradle-temp.zip'''' -DestinationPath ''''D:/'''' -Force\")",
       "Bash(mv \"D:/gradle-8.5\" \"D:/gradle\")",
       "Bash(rm \"D:/gradle-temp.zip\")",
-      "Bash(ls \"D:\\\\Apk Build\\\\focusapp\\\\android\\\\app\\\\src\\\\main\\\\res\"\" 2>/dev/null || echo \"NOT FOUND \")"
+      "Bash(ls \"D:\\\\Apk Build\\\\focusapp\\\\android\\\\app\\\\src\\\\main\\\\res\"\" 2>/dev/null || echo \"NOT FOUND \")",
+      "Bash(gradle wrapper:*)",
+      "Bash(gh api:*)"
     ]
   }
 }

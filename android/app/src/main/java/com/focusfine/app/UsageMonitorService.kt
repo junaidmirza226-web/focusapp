@@ -33,8 +33,8 @@ class UsageMonitorService : Service() {
     private val monitorRunnable = object : Runnable {
         override fun run() {
             checkUsage()
-            // Poll every 30 seconds
-            handler.postDelayed(this, 30_000L)
+            // Poll rapidly to ensure instantaneous locking
+            handler.postDelayed(this, 3_000L)
         }
     }
 
@@ -51,18 +51,32 @@ class UsageMonitorService : Service() {
         return START_STICKY
     }
 
+    private fun getForegroundApp(usm: UsageStatsManager, now: Long): String? {
+        val events = usm.queryEvents(now - 60_000L, now)
+        var currentApp: String? = null
+        val event = android.app.usage.UsageEvents.Event()
+        while (events.hasNextEvent()) {
+            events.getNextEvent(event)
+            if (event.eventType == android.app.usage.UsageEvents.Event.ACTIVITY_RESUMED ||
+                event.eventType == android.app.usage.UsageEvents.Event.MOVE_TO_FOREGROUND) {
+                currentApp = event.packageName
+            }
+        }
+        return currentApp
+    }
+
     private fun checkUsage() {
         try {
             val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
             val now = System.currentTimeMillis()
-            // INTERVAL_BEST requests the most granular/recent data available.
-            // INTERVAL_DAILY is too stale for short limits (can lag several minutes behind).
-            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_BEST, now - 86_400_000L, now)
-                ?: return
+            val todayStart = getTodayStartMillis()
+
+            val statsMap = usm.queryAndAggregateUsageStats(todayStart, now)
+            if (statsMap == null || statsMap.isEmpty()) return
+            
+            val currentApp = getForegroundApp(usm, now)
 
             coroutineScope.launch {
-                val todayStart = getTodayStartMillis()
-
                 // Reset warned flags at the start of a new day
                 if (todayStart != lastTodayStart) {
                     lastTodayStart = todayStart
@@ -71,11 +85,12 @@ class UsageMonitorService : Service() {
 
                 val db = FocusFineApp.database
                 val enabledApps = db.userSettingsDao().getAllSettings().filter { it.isEnabled }
+                var isAnyAppLockedRightNow = false
 
-                for (usageStat in stats) {
-                    val pkg = usageStat.packageName
-                    val usedMinutes = usageStat.totalTimeInForeground / 1000L / 60L
-                    val settings = enabledApps.find { it.packageName == pkg } ?: continue
+                for (settings in enabledApps) {
+                    val pkg = settings.packageName
+                    val usageStat = statsMap[pkg]
+                    val usedMinutes = if (usageStat != null) usageStat.totalTimeInForeground / 1000L / 60L else 0L
 
                     // Persist today's usage
                     val existing = db.appUsageDao().getUsageForDate(pkg, todayStart)
@@ -98,15 +113,49 @@ class UsageMonitorService : Service() {
                     if (usedMinutes > limitMinutes) {
                         val activeUnlocks = db.paymentDao().getActiveUnlocks(pkg, now)
                         if (activeUnlocks.isEmpty()) {
-                            if (!lockedAppsThisSession.contains(pkg)) {
-                                lockedAppsThisSession.add(pkg)
-                                launchLockScreen(pkg, settings.appName)
+                            isAnyAppLockedRightNow = true
+                            // Only lock if the app is currently in foreground (prevent background locking loops)
+                            if (currentApp == pkg) {
+                                if (!lockedAppsThisSession.contains(pkg)) {
+                                    lockedAppsThisSession.add(pkg)
+                                    launchLockScreen(pkg, settings.appName)
+                                }
+                            } else {
+                                lockedAppsThisSession.remove(pkg)
                             }
                         } else {
-                            // Paid unlock is active — remove from locked set so it re-locks after expiry
+                            // Paid unlock is active
                             lockedAppsThisSession.remove(pkg)
                         }
+                    } else {
+                        lockedAppsThisSession.remove(pkg)
                     }
+                }
+
+                // Uninstall prevention block
+                if (isAnyAppLockedRightNow && currentApp != null) {
+                    val systemAppsToCheck = listOf(
+                        "com.android.settings", 
+                        "com.google.android.packageinstaller",
+                        "com.miui.securitycenter",
+                        "com.android.vending"
+                    )
+                    if (systemAppsToCheck.contains(currentApp)) {
+                        if (!lockedAppsThisSession.contains(currentApp)) {
+                            lockedAppsThisSession.add(currentApp)
+                            // We don't want to save this to DB, just lock it
+                            launchLockScreen(currentApp, "System Blocked (Uninstall Prevention)")
+                        }
+                    } else {
+                        lockedAppsThisSession.removeAll(systemAppsToCheck)
+                    }
+                } else {
+                    lockedAppsThisSession.removeAll(listOf(
+                        "com.android.settings", 
+                        "com.google.android.packageinstaller",
+                        "com.miui.securitycenter",
+                        "com.android.vending"
+                    ))
                 }
             }
         } catch (e: Exception) {
