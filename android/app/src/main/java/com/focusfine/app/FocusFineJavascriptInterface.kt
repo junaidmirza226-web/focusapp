@@ -87,13 +87,22 @@ class FocusFineJavascriptInterface(
 
     // ── Installed Apps ────────────────────────────────────────────────────────
 
-    /** Returns JSON array of {packageName, appName} for all launchable apps. */
+    /** Returns JSON array of {packageName, appName} for all non-system launchable apps. */
     @JavascriptInterface
     fun getInstalledApps(): String {
         val pm = context.packageManager
         val launchIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val apps = pm.queryIntentActivities(launchIntent, 0)
-            .filter { it.activityInfo.packageName != context.packageName }
+            .filter { info ->
+                val pkg = info.activityInfo.packageName
+                if (pkg == context.packageName) return@filter false
+                val appInfo = try { pm.getApplicationInfo(pkg, 0) } catch (e: Exception) { return@filter false }
+                val isSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
+                val isUpdated = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
+                // Include user-installed apps and updated system apps (YouTube, Chrome, etc.)
+                // Exclude pure system apps (Settings, Camera, SIM Toolkit, Files, etc.)
+                !isSystem || isUpdated
+            }
             .sortedBy { it.loadLabel(pm).toString().lowercase() }
 
         val result = JSONArray()

@@ -1,0 +1,35 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!--
+  Launcher icon foreground layer — white lock on transparent background.
+  108x108dp with the safe zone from 18dp to 90dp on each axis.
+-->
+<vector xmlns:android="http://schemas.android.com/apk/res/android"
+    android:width="108dp"
+    android:height="108dp"
+    android:viewportWidth="108"
+    android:viewportHeight="108">
+
+    <!-- Lock body (rounded rectangle) -->
+    <path
+        android:fillColor="#FFFFFF"
+        android:pathData="M36,52 L36,76 Q36,80 40,80 L68,80 Q72,80 72,76 L72,52 Q72,48 68,48 L40,48 Q36,48 36,52 Z" />
+
+    <!-- Lock shackle (U-shape arch) — white stroke -->
+    <path
+        android:fillColor="#00000000"
+        android:strokeColor="#FFFFFF"
+        android:strokeWidth="5"
+        android:strokeLineCap="round"
+        android:pathData="M44,48 L44,38 Q44,28 54,28 Q64,28 64,38 L64,48" />
+
+    <!-- Keyhole circle (black = transparent hole over black background) -->
+    <path
+        android:fillColor="#000000"
+        android:pathData="M54,60 m-5,0 a5,5 0 1,0 10,0 a5,5 0 1,0 -10,0 Z" />
+
+    <!-- Keyhole stem -->
+    <path
+        android:fillColor="#000000"
+        android:pathData="M51,64 L57,64 L56,72 L52,72 Z" />
+
+</vector>

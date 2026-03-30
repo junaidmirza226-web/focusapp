@@ -128,10 +128,23 @@ class MainActivity : AppCompatActivity() {
         else startService(serviceIntent)
     }
 
+    @Deprecated("Deprecated in Java")
+    override fun onBackPressed() {
+        val webView = findViewById<WebView>(R.id.webview)
+        if (webView.canGoBack()) {
+            webView.goBack()
+        } else {
+            // Go home — keep the monitoring service alive rather than closing the app
+            startActivity(
+                Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
+            )
+        }
+    }
+
     override fun onDestroy() {
         super.onDestroy()
-        val serviceIntent = Intent(this, UsageMonitorService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent)
-        else startService(serviceIntent)
+        // Service is already running (started in startMonitoringServiceIfNeeded).
+        // Do NOT call startForegroundService here — on Android 12+ this throws
+        // ForegroundServiceStartNotAllowedException when the app is going to background.
     }
 }
