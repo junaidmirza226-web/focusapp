@@ -114,14 +114,23 @@ class UsageMonitorService : Service() {
                         val activeUnlocks = db.paymentDao().getActiveUnlocks(pkg, now)
                         if (activeUnlocks.isEmpty()) {
                             isAnyAppLockedRightNow = true
-                            // Only lock if the app is currently in foreground (prevent background locking loops)
-                            if (currentApp == pkg) {
-                                if (!lockedAppsThisSession.contains(pkg)) {
-                                    lockedAppsThisSession.add(pkg)
-                                    launchLockScreen(pkg, settings.appName)
+                            if (!lockedAppsThisSession.contains(pkg)) {
+                                lockedAppsThisSession.add(pkg)
+                                
+                                // Show Toast before launching lock
+                                handler.post {
+                                    android.widget.Toast.makeText(this@UsageMonitorService, "${settings.appName}: Limit exceeded", android.widget.Toast.LENGTH_SHORT).show()
                                 }
-                            } else {
-                                lockedAppsThisSession.remove(pkg)
+
+                                launchLockScreen(pkg, settings.appName)
+
+                                // Kill background processes to prevent bypass
+                                try {
+                                    val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
+                                    am.killBackgroundProcesses(pkg)
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Failed to kill process for $pkg", e)
+                                }
                             }
                         } else {
                             // Paid unlock is active
@@ -133,29 +142,22 @@ class UsageMonitorService : Service() {
                 }
 
                 // Uninstall prevention block
-                if (isAnyAppLockedRightNow && currentApp != null) {
-                    val systemAppsToCheck = listOf(
-                        "com.android.settings", 
-                        "com.google.android.packageinstaller",
-                        "com.miui.securitycenter",
-                        "com.android.vending"
-                    )
-                    if (systemAppsToCheck.contains(currentApp)) {
-                        if (!lockedAppsThisSession.contains(currentApp)) {
-                            lockedAppsThisSession.add(currentApp)
-                            // We don't want to save this to DB, just lock it
-                            launchLockScreen(currentApp, "System Blocked (Uninstall Prevention)")
-                        }
-                    } else {
-                        lockedAppsThisSession.removeAll(systemAppsToCheck)
+                val systemAppsToCheck = listOf(
+                    "com.android.settings", 
+                    "com.google.android.packageinstaller",
+                    "com.miui.securitycenter",
+                    "com.android.vending"
+                )
+                
+                if (isAnyAppLockedRightNow && currentApp != null && systemAppsToCheck.contains(currentApp)) {
+                    if (!lockedAppsThisSession.contains(currentApp)) {
+                        lockedAppsThisSession.add(currentApp)
+                        launchLockScreen(currentApp, "System Blocked")
                     }
                 } else {
-                    lockedAppsThisSession.removeAll(listOf(
-                        "com.android.settings", 
-                        "com.google.android.packageinstaller",
-                        "com.miui.securitycenter",
-                        "com.android.vending"
-                    ))
+                    // Remove system apps from locked session if we aren't currently blocking them
+                    // but ONLY if they are not the active foreground app we should be blocking
+                    lockedAppsThisSession.removeAll(systemAppsToCheck.filter { it != currentApp })
                 }
             }
         } catch (e: Exception) {
@@ -175,6 +177,11 @@ class UsageMonitorService : Service() {
         val strictMode = FocusFineApp.preferences.isStrictModeEnabled
         val intent = Intent(this, OverlayActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            // Note: FLAG_SHOW_WHEN_LOCKED is deprecated but still useful for older versions
+            // Alternative is setShowWhenLocked(true) in the Activity itself.
+            @Suppress("DEPRECATION")
+            addFlags(android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
             putExtra("LOCKED_PACKAGE", packageName)
             putExtra("APP_NAME", appName)
             putExtra("STRICT_MODE", strictMode)
