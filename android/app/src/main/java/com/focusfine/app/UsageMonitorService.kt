@@ -174,14 +174,6 @@ class UsageMonitorService : Service() {
                                 handler.post {
                                     android.widget.Toast.makeText(applicationContext, "${settings.appName}: Limit exceeded", android.widget.Toast.LENGTH_SHORT).show()
                                 }
-                                
-                                // One-time background kill boost
-                                try {
-                                    val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
-                                    am.killBackgroundProcesses(pkg)
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "Failed to kill process for $pkg", e)
-                                }
                             }
 
                             // 2. Continuous Locking: If the user is currently in the forbidden app,
@@ -231,10 +223,7 @@ class UsageMonitorService : Service() {
     private fun launchLockScreen(packageName: String, appName: String) {
         val strictMode = FocusFineApp.preferences.isStrictModeEnabled
         val intent = Intent(this, OverlayActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
-            addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
-            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
+            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
             putExtra("LOCKED_PACKAGE", packageName)
             putExtra("APP_NAME", appName)
             putExtra("STRICT_MODE", strictMode)
