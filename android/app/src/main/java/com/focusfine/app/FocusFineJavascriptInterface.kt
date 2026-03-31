@@ -139,14 +139,29 @@ class FocusFineJavascriptInterface(
     @JavascriptInterface
     fun saveApp(packageName: String, limitMinutes: Int, appName: String) {
         runBlocking(Dispatchers.IO) {
+            val todayStart = getTodayStartMillis()
+            val currentUsage = getCurrentTotalUsageToday(packageName)
             val existing = db.userSettingsDao().getSettings(packageName)
+            
             if (existing != null) {
                 db.userSettingsDao().update(
-                    existing.copy(dailyLimitMinutes = limitMinutes, appName = appName, isEnabled = true)
+                    existing.copy(
+                        dailyLimitMinutes = limitMinutes, 
+                        appName = appName, 
+                        isEnabled = true,
+                        baseUsageMinutes = currentUsage,
+                        lastResetDate = todayStart
+                    )
                 )
             } else {
                 db.userSettingsDao().insert(
-                    UserSettings(packageName = packageName, dailyLimitMinutes = limitMinutes, appName = appName)
+                    UserSettings(
+                        packageName = packageName, 
+                        dailyLimitMinutes = limitMinutes, 
+                        appName = appName,
+                        baseUsageMinutes = currentUsage,
+                        lastResetDate = todayStart
+                    )
                 )
             }
         }
@@ -317,5 +332,13 @@ class FocusFineJavascriptInterface(
             set(Calendar.SECOND, 0)
             set(Calendar.MILLISECOND, 0)
         }.timeInMillis
+    }
+
+    private fun getCurrentTotalUsageToday(packageName: String): Long {
+        val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as android.app.usage.UsageStatsManager
+        val now = System.currentTimeMillis()
+        val stats = usm.queryUsageStats(android.app.usage.UsageStatsManager.INTERVAL_DAILY, getTodayStartMillis(), now)
+        val usage = stats.find { it.packageName == packageName }
+        return if (usage != null) usage.totalTimeInForeground / 1000L / 60L else 0L
     }
 }

@@ -46,6 +46,31 @@ class OverlayActivity : AppCompatActivity() {
             )
         }
 
+        handleIntent(intent)
+        setupPaymentButtons()
+
+        // Close button always visible
+        findViewById<Button>(R.id.btn_close).setOnClickListener { goHome() }
+
+        paymentManager = PaymentManager(this)
+        paymentManager.setPurchaseListener { success, payment ->
+            if (success && payment != null) {
+                showSuccessScreen(payment)
+            } else {
+                isProcessing = false
+                Toast.makeText(this, "Payment failed. Please try again.", Toast.LENGTH_SHORT).show()
+            }
+        }
+        paymentManager.restorePurchases()
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        setIntent(intent)
+        handleIntent(intent)
+    }
+
+    private fun handleIntent(intent: Intent) {
         lockedPackage = intent.getStringExtra("LOCKED_PACKAGE") ?: ""
         appName = intent.getStringExtra("APP_NAME")?.takeIf { it.isNotEmpty() } ?: lockedPackage
         isStrictMode = intent.getBooleanExtra("STRICT_MODE", false)
@@ -63,22 +88,8 @@ class OverlayActivity : AppCompatActivity() {
             strictBanner.visibility = View.VISIBLE
         } else {
             strictBanner.visibility = View.GONE
-            setupPaymentButtons()
+            // Keep existing button setup or refresh if needed
         }
-
-        // Close button always visible
-        findViewById<Button>(R.id.btn_close).setOnClickListener { goHome() }
-
-        paymentManager = PaymentManager(this)
-        paymentManager.setPurchaseListener { success, payment ->
-            if (success && payment != null) {
-                showSuccessScreen(payment)
-            } else {
-                isProcessing = false
-                Toast.makeText(this, "Payment failed. Please try again.", Toast.LENGTH_SHORT).show()
-            }
-        }
-        paymentManager.restorePurchases()
     }
 
     private fun setupPaymentButtons() {

@@ -42,7 +42,9 @@ data class UserSettings(
     val isEnabled: Boolean = true, // Whether this app is being monitored
     val isNotified: Boolean = false, // Whether user was notified about approaching limit
     val appName: String = "", // Display name of the app
-    val lastResetTime: Long = System.currentTimeMillis() // When the daily limit was last reset
+    val lastResetTime: Long = System.currentTimeMillis(), // When the daily limit was last reset
+    val baseUsageMinutes: Long = 0, // Usage time already spent today BEFORE the limit was set
+    val lastResetDate: Long = 0 // Unix timestamp of the day when baseUsageMinutes was recorded
 )
 
 /**

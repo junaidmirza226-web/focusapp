@@ -109,15 +109,25 @@ class UsageMonitorService : Service() {
 
                     val limitMinutes = settings.dailyLimitMinutes.toLong()
 
+                    // Reset baseline at midnight
+                    val effectiveBaseUsage = if (todayStart > settings.lastResetDate) {
+                        db.userSettingsDao().update(settings.copy(baseUsageMinutes = 0, lastResetDate = todayStart))
+                        0L
+                    } else {
+                        settings.baseUsageMinutes
+                    }
+
+                    val effectiveUsage = (usedMinutes - effectiveBaseUsage).coerceAtLeast(0L)
+
                     // ── 80% warning notification ─────────────────────────────
-                    if (usedMinutes >= limitMinutes * 80 / 100 && !settings.isNotified) {
-                        val remaining = limitMinutes - usedMinutes
+                    if (effectiveUsage >= limitMinutes * 80 / 100 && !settings.isNotified) {
+                        val remaining = limitMinutes - effectiveUsage
                         sendWarningNotification(pkg, settings.appName, remaining)
                         db.userSettingsDao().markAsNotified(pkg)
                     }
 
                     // ── Lock logic ────────────────────────────────────────────
-                    if (usedMinutes > limitMinutes) {
+                    if (effectiveUsage > limitMinutes) {
                         val activeUnlocks = db.paymentDao().getActiveUnlocks(pkg, now)
                         if (activeUnlocks.isEmpty()) {
                             isAnyAppLockedRightNow = true
@@ -141,7 +151,11 @@ class UsageMonitorService : Service() {
                             // 2. Continuous Locking: If the user is currently in the forbidden app,
                             // we KEEP launching the lock screen to prevent bypass.
                             if (currentApp == pkg) {
-                                launchLockScreen(pkg, settings.appName)
+                                try {
+                                    launchLockScreen(pkg, settings.appName)
+                                } catch (e: Exception) {
+                                    Log.e(TAG, "Failed to launch lock screen", e)
+                                }
                             }
                         } else {
                             // Paid unlock is active
