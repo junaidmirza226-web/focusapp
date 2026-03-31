@@ -1,8 +1,14 @@
 @import "tailwindcss";
 
-@theme {
+/* Define base variables in standard root to support linter awareness */
+:root {
   --font-sans: "Inter", sans-serif;
   --font-outfit: "Outfit", sans-serif;
+}
+
+@theme {
+  --font-sans: var(--font-sans);
+  --font-outfit: var(--font-outfit);
 }
 
 @layer base {

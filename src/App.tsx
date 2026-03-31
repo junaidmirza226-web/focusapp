@@ -575,8 +575,12 @@ export default function App() {
                     </div>
                     {/* Usage bar */}
                     <div className="absolute bottom-0 left-0 w-full h-1.5 bg-zinc-800" aria-hidden="true">
-                      <div className={`h-full transition-all duration-700 w-[var(--progress)] ${isOver ? 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.8)]' : 'bg-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.5)]'}`}
-                        style={{ '--progress': `${pct}%` } as React.CSSProperties} />
+                      <motion.div 
+                        initial={{ width: 0 }}
+                        animate={{ width: `${pct}%` }}
+                        transition={{ duration: 0.7, ease: "easeOut" }}
+                        className={`h-full ${isOver ? 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.8)]' : 'bg-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.5)]'}`}
+                      />
                     </div>
                   </motion.div>
                 );
