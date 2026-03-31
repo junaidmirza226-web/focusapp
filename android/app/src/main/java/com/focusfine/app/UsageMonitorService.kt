@@ -34,7 +34,7 @@ class UsageMonitorService : Service() {
         override fun run() {
             checkUsage()
             // Poll rapidly to ensure instantaneous locking
-            handler.postDelayed(this, 3_000L)
+            handler.postDelayed(this, 1500L)
         }
     }
 
@@ -52,17 +52,27 @@ class UsageMonitorService : Service() {
     }
 
     private fun getForegroundApp(usm: UsageStatsManager, now: Long): String? {
-        val events = usm.queryEvents(now - 60_000L, now)
-        var currentApp: String? = null
+        // Look back 5 minutes for events to find the most recent foreground activity
+        val events = usm.queryEvents(now - 300_000L, now)
+        var lastValidPkg: String? = null
         val event = android.app.usage.UsageEvents.Event()
+        
         while (events.hasNextEvent()) {
             events.getNextEvent(event)
+            // We care about any event that places a package in the foreground
             if (event.eventType == android.app.usage.UsageEvents.Event.ACTIVITY_RESUMED ||
                 event.eventType == android.app.usage.UsageEvents.Event.MOVE_TO_FOREGROUND) {
-                currentApp = event.packageName
+                lastValidPkg = event.packageName
+            } else if (event.eventType == android.app.usage.UsageEvents.Event.ACTIVITY_PAUSED ||
+                event.eventType == android.app.usage.UsageEvents.Event.MOVE_TO_BACKGROUND) {
+                // If the package we thought was foreground is now explicitly backgrounded, clear it
+                // unless another resume event happens later in the buffer
+                if (event.packageName == lastValidPkg) {
+                    lastValidPkg = null
+                }
             }
         }
-        return currentApp
+        return lastValidPkg
     }
 
     private fun checkUsage() {
