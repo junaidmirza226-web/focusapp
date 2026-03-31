@@ -29,6 +29,12 @@ class UsageMonitorService : Service() {
 
     // Used to detect day changes and reset the "warned" flag in UserSettings
     private var lastTodayStart = 0L
+    private var isAnyAppLockedRightNow = false
+    
+    // Live Tracker Properties to instantly catch the usermid-session
+    private var cachedSessionApp: String? = null
+    private var cachedSessionStart: Long = 0L
+    private var lastEventTimeProcessed: Long = 0L
 
     private val monitorRunnable = object : Runnable {
         override fun run() {
@@ -51,47 +57,50 @@ class UsageMonitorService : Service() {
         return START_STICKY
     }
 
-    private fun getForegroundApp(usm: UsageStatsManager, now: Long): String? {
-        // Method 1: Most accurate — events.
-        val events = usm.queryEvents(now - 300_000L, now)
-        var lastValidPkg: String? = null
-        val event = android.app.usage.UsageEvents.Event()
-        
-        while (events.hasNextEvent()) {
-            events.getNextEvent(event)
-            if (event.eventType == android.app.usage.UsageEvents.Event.ACTIVITY_RESUMED ||
-                event.eventType == android.app.usage.UsageEvents.Event.MOVE_TO_FOREGROUND) {
-                lastValidPkg = event.packageName
-            } else if (event.eventType == android.app.usage.UsageEvents.Event.ACTIVITY_PAUSED ||
-                event.eventType == android.app.usage.UsageEvents.Event.MOVE_TO_BACKGROUND) {
-                if (event.packageName == lastValidPkg) {
-                    lastValidPkg = null
-                }
-            }
-        }
-
-        // Method 2: Fallback — aggregate lastTimeUsed. 
-        // If event loop returns null, see which app has the absolute most recent activity.
-        if (lastValidPkg == null) {
-            val stats = usm.queryUsageStats(UsageStatsManager.INTERVAL_DAILY, now - 1000 * 60, now)
-            if (stats != null) {
-                lastValidPkg = stats.maxByOrNull { it.lastTimeUsed }?.packageName
-            }
-        }
-
-        return lastValidPkg
-    }
-
     private fun checkUsage() {
         try {
             val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
             val now = System.currentTimeMillis()
             val todayStart = getTodayStartMillis()
 
+            // 1. Live Session Tracker: Process only the NEW events since the last 1-second tick!
+            if (lastEventTimeProcessed < todayStart) {
+                lastEventTimeProcessed = todayStart
+                cachedSessionApp = null
+                cachedSessionStart = 0L
+            }
+
+            val events = usm.queryEvents(lastEventTimeProcessed, now)
+            val event = android.app.usage.UsageEvents.Event()
+            var anyEventProcessed = false
+
+            while (events.hasNextEvent()) {
+                events.getNextEvent(event)
+                anyEventProcessed = true
+                if (event.timeStamp >= lastEventTimeProcessed) {
+                    if (event.eventType == android.app.usage.UsageEvents.Event.ACTIVITY_RESUMED ||
+                        event.eventType == android.app.usage.UsageEvents.Event.MOVE_TO_FOREGROUND) {
+                        cachedSessionApp = event.packageName
+                        cachedSessionStart = event.timeStamp
+                    } else if (event.eventType == android.app.usage.UsageEvents.Event.ACTIVITY_PAUSED ||
+                               event.eventType == android.app.usage.UsageEvents.Event.MOVE_TO_BACKGROUND) {
+                        if (event.packageName == cachedSessionApp) {
+                            cachedSessionApp = null
+                        }
+                    }
+                    lastEventTimeProcessed = maxOf(lastEventTimeProcessed, event.timeStamp)
+                }
+            }
+
+            // If there's no events for 10 seconds, drag the tracker forward to stay fast
+            if (!anyEventProcessed && (now - lastEventTimeProcessed) > 10_000L) {
+                lastEventTimeProcessed = now - 5000L
+            }
+
+            val currentApp = cachedSessionApp
+
             val statsMap = usm.queryAndAggregateUsageStats(todayStart, now)
             if (statsMap == null || statsMap.isEmpty()) return
-            
-            val currentApp = getForegroundApp(usm, now)
 
             coroutineScope.launch {
                 // Reset warned flags at the start of a new day
@@ -114,7 +123,17 @@ class UsageMonitorService : Service() {
                     }
 
                     val usageStat = statsMap[pkg]
-                    val usedMinutes = if (usageStat != null) usageStat.totalTimeInForeground / 1000L / 60L else 0L
+                    var usedMs = if (usageStat != null) usageStat.totalTimeInForeground else 0L
+
+                    // 🔥 MAGIC OVERRIDE: Add the currently active session because `statsMap` lags behind!
+                    if (pkg == currentApp && cachedSessionStart > 0) {
+                        val liveSessionMs = now - cachedSessionStart
+                        if (liveSessionMs > 0) {
+                            usedMs += liveSessionMs
+                        }
+                    }
+
+                    val usedMinutes = usedMs / 1000L / 60L
 
                     // Persist today's usage
                     val existing = db.appUsageDao().getUsageForDate(pkg, todayStart)
