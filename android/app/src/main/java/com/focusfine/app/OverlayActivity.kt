@@ -34,6 +34,18 @@ class OverlayActivity : AppCompatActivity() {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_overlay)
 
+        // Show over lock screen if phone is locked
+        if (android.os.Build.VERSION.SDK_INT >= android.os.Build.VERSION_CODES.O_MR1) {
+            setShowWhenLocked(true)
+            setTurnScreenOn(true)
+        } else {
+            @Suppress("DEPRECATION")
+            window.addFlags(
+                android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED or
+                android.view.WindowManager.LayoutParams.FLAG_TURN_SCREEN_ON
+            )
+        }
+
         lockedPackage = intent.getStringExtra("LOCKED_PACKAGE") ?: ""
         appName = intent.getStringExtra("APP_NAME")?.takeIf { it.isNotEmpty() } ?: lockedPackage
         isStrictMode = intent.getBooleanExtra("STRICT_MODE", false)

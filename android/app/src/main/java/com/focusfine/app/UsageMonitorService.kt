@@ -178,10 +178,6 @@ class UsageMonitorService : Service() {
         val intent = Intent(this, OverlayActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
-            // Note: FLAG_SHOW_WHEN_LOCKED is deprecated but still useful for older versions
-            // Alternative is setShowWhenLocked(true) in the Activity itself.
-            @Suppress("DEPRECATION")
-            addFlags(android.view.WindowManager.LayoutParams.FLAG_SHOW_WHEN_LOCKED)
             putExtra("LOCKED_PACKAGE", packageName)
             putExtra("APP_NAME", appName)
             putExtra("STRICT_MODE", strictMode)
