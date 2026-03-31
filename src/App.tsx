@@ -1,4 +1,4 @@
-import React, { useState, useEffect } from 'react';
+import React, { useState, useEffect, useCallback } from 'react';
 import { 
   Smartphone, 
   ShieldCheck, 
@@ -33,6 +33,7 @@ declare global {
       requestUsageAccess: () => void;
       requestOverlay: () => void;
       requestBatteryOptimization: () => void;
+      setOnboardingComplete: (complete: boolean) => void;
     };
   }
 }
@@ -191,20 +192,63 @@ const WeeklyTrend = ({ data }: { data: WeeklyStatDay[] }) => {
 
 // ── Sub-Views ───────────────────────────────────────────────────────────────
 
-const OnboardingView = ({ onboardingStep, setOnboardingStep, setStep }: { onboardingStep: number, setOnboardingStep: React.Dispatch<React.SetStateAction<number>>, setStep: React.Dispatch<React.SetStateAction<AppState>> }) => {
+const OnboardingView = ({ 
+  onboardingStep, 
+  setOnboardingStep, 
+  setStep, 
+  perms, 
+  refreshPerms 
+}: { 
+  onboardingStep: number, 
+  setOnboardingStep: React.Dispatch<React.SetStateAction<number>>, 
+  setStep: React.Dispatch<React.SetStateAction<AppState>>,
+  perms: { usageAccess: boolean; overlay: boolean },
+  refreshPerms: () => void
+}) => {
   const steps = [
     { title: 'Extreme Focus.', description: 'Block distractions and reclaim your time. Set hard limits that give you back control over your attention.', icon: <Smartphone className="text-white drop-shadow-[0_0_15px_rgba(255,255,255,0.8)]" size={48} /> },
-    { title: 'Choose Targets', description: 'Grant access so FocusFine can accurately track and block the apps that drain your productivity.', icon: <BarChart3 className="text-emerald-400 drop-shadow-[0_0_15px_rgba(52,211,153,0.8)]" size={48} />, permission: 'Enable Tracking', action: () => window.Android?.requestUsageAccess() },
-    { title: 'Ironclad Lock', description: 'Allow us to overlay the lock screen over distractive apps instantly. No way back until the timer hits zero.', icon: <ShieldCheck className="text-blue-400 drop-shadow-[0_0_15px_rgba(96,165,250,0.8)]" size={48} />, permission: 'Enable Lock Screen', action: () => window.Android?.requestOverlay() },
+    { 
+      title: 'Usage Access', 
+      description: 'Grant access so FocusFine can accurately track and block the apps that drain your productivity.', 
+      icon: <BarChart3 className="text-emerald-400 drop-shadow-[0_0_15px_rgba(52,211,153,0.8)]" size={48} />, 
+      permission: perms.usageAccess ? 'Usage Access Granted' : 'Enable Usage Access', 
+      isGranted: perms.usageAccess,
+      action: () => window.Android?.requestUsageAccess() 
+    },
+    { 
+      title: 'Ironclad Lock', 
+      description: 'Allow us to overlay the lock screen over distractive apps instantly. No way back until the timer hits zero.', 
+      icon: <ShieldCheck className="text-blue-400 drop-shadow-[0_0_15px_rgba(96,165,250,0.8)]" size={48} />, 
+      permission: perms.overlay ? 'Overlay Granted' : 'Enable Lock Screen', 
+      isGranted: perms.overlay,
+      action: () => window.Android?.requestOverlay() 
+    },
     { title: 'Unstoppable Mode', description: 'To prevent any bypass, FocusFine runs persistently. This is your commitment to staying focused.', icon: <Zap className="text-amber-400 drop-shadow-[0_0_15px_rgba(251,191,36,0.8)]" size={48} />, permission: 'Enable Unstoppable Mode', action: () => window.Android?.requestBatteryOptimization() },
   ];
+  
   const current = steps[onboardingStep];
   const isLast = onboardingStep === steps.length - 1;
 
-  const handlePermissionTap = () => {
-    current.action?.();
-    if (isLast) setStep('setup');
-    else setOnboardingStep(s => s + 1);
+  // Auto-advance if already granted
+  useEffect(() => {
+    if (onboardingStep > 0 && onboardingStep < 3 && current.isGranted) {
+      setTimeout(() => setOnboardingStep(s => s + 1), 600);
+    }
+  }, [perms, onboardingStep, current.isGranted]);
+
+  const handleNextTap = () => {
+    if (onboardingStep === 0) {
+      setOnboardingStep(1);
+    } else if (isLast) {
+      setStep('setup');
+    } else if (current.isGranted) {
+      setOnboardingStep(s => s + 1);
+    } else {
+      current.action?.();
+      // Start a polling check for 5 seconds to catch the permission grant
+      const interval = setInterval(refreshPerms, 1000);
+      setTimeout(() => clearInterval(interval), 5000);
+    }
   };
 
   return (
@@ -223,14 +267,27 @@ const OnboardingView = ({ onboardingStep, setOnboardingStep, setStep }: { onboar
         <h1 className="text-4xl font-black tracking-tight mb-4 text-white font-outfit">{current.title}</h1>
         <p className="text-zinc-400 text-lg mb-12 leading-relaxed">{current.description}</p>
         <div className="space-y-4">
-          {current.permission ? (
-            <Button onClick={handlePermissionTap} ariaLabel={current.permission} className="w-full py-5 text-lg shadow-[0_0_30px_rgba(255,255,255,0.15)]">{current.permission}</Button>
-          ) : (
-            <Button onClick={() => setOnboardingStep(1)} ariaLabel="Begin Setup" className="w-full py-5 text-lg shadow-[0_0_30px_rgba(255,255,255,0.15)]">Begin Setup <ArrowRight size={20} /></Button>
+          <Button 
+            onClick={handleNextTap} 
+            ariaLabel={current.permission || "Next"} 
+            className={`w-full py-5 text-lg shadow-lg ${current.isGranted ? 'bg-emerald-500 text-black' : ''}`}
+          >
+            {current.permission || (isLast ? "Complete Setup" : "Begin Setup")}
+            {!current.isGranted && !isLast && onboardingStep > 0 && <ArrowRight size={20} className="inline ml-2" />}
+          </Button>
+          
+          {!current.isGranted && onboardingStep > 0 && onboardingStep < 3 && (
+            <button 
+              onClick={refreshPerms}
+              className="text-emerald-400 text-sm font-bold uppercase tracking-widest mt-4 hover:text-emerald-300"
+            >
+              Check Status
+            </button>
           )}
+
           <div className="flex justify-center gap-2 mt-10">
             {steps.map((_, i) => (
-              <div key={i} className={`h-1.5 rounded-full transition-all duration-300 ${i === onboardingStep ? 'w-8 bg-white shadow-[0_0_10px_rgba(255,255,255,0.8)]' : 'w-2 bg-zinc-800'}`} />
+              <div key={i} className={`h-1.5 rounded-full transition-all duration-300 ${i === onboardingStep ? 'w-8 bg-white shadow-xl' : 'w-2 bg-zinc-800'}`} />
             ))}
           </div>
         </div>
@@ -283,13 +340,13 @@ const SetupView = ({
                         aria-label={`Daily limit for ${app.appName} in minutes`}
                         title={`Set daily limit for ${app.appName}`}
                         onChange={e => updateLimit(app.packageName, parseInt(e.target.value) || 1)}
-                        className="w-12 bg-transparent border-b border-zinc-600 focus:border-emerald-400 outline-none text-sm font-medium text-white p-0 text-center" />
+                        className="w-12 bg-transparent border-b border-zinc-600 focus:border-emerald-400 outline-none text-sm font-medium text-white p-0 text-center shadow-none" />
                       <span className="text-xs text-zinc-500 uppercase font-bold tracking-wider">min / day</span>
                     </div>
                   )}
                 </div>
               </div>
-              <div className={`w-7 h-7 rounded-full border-2 flex items-center justify-center transition-all ${app.isSelected ? 'bg-emerald-500 border-emerald-500 shadow-[0_0_15px_rgba(16,185,129,0.5)]' : 'border-zinc-700'}`}>
+              <div className={`w-7 h-7 rounded-full border-2 flex items-center justify-center transition-all ${app.isSelected ? 'bg-emerald-500 border-emerald-500 shadow-lg' : 'border-zinc-700'}`}>
                 {app.isSelected && <CheckCircle2 size={16} className="text-black" />}
               </div>
             </motion.div>
@@ -297,7 +354,7 @@ const SetupView = ({
         </div>
       )}
       <div className="fixed bottom-0 left-0 w-full p-6 bg-gradient-to-t from-black via-black to-transparent z-20">
-        <Button disabled={selectedCount === 0 || loadingApps} onClick={finishSetup} ariaLabel="Finish Setup" className="w-full py-5 text-lg shadow-[0_0_30px_rgba(255,255,255,0.1)]">
+        <Button disabled={selectedCount === 0 || loadingApps} onClick={finishSetup} ariaLabel="Finish Setup" className="w-full py-5 text-lg shadow-xl">
           {selectedCount === 0 ? 'Select at least one' : `Engage Lock on ${selectedCount} App${selectedCount > 1 ? 's' : ''}`}
         </Button>
       </div>
@@ -310,23 +367,25 @@ const DashboardView = ({
   stats, 
   weeklyData, 
   setStep, 
-  setMonitoredApps 
+  setMonitoredApps,
+  toggleStrictMode
 }: { 
   monitoredApps: MonitoredApp[], 
   stats: DashboardStats, 
   weeklyData: WeeklyStatDay[], 
   setStep: React.Dispatch<React.SetStateAction<AppState>>, 
-  setMonitoredApps: React.Dispatch<React.SetStateAction<MonitoredApp[]>> 
+  setMonitoredApps: React.Dispatch<React.SetStateAction<MonitoredApp[]>>,
+  toggleStrictMode: (enabled: boolean) => void
 }) => {
   const scoreSign = stats.scoreDiffVsYesterday >= 0 ? '+' : '';
   const timeSavedHrs = (stats.timeSavedMinutes / 60).toFixed(1);
 
   return (
     <div className="max-w-2xl mx-auto px-6 py-12 pb-32 relative">
-      <div className="fixed top-[-10%] left-[-10%] w-[120%] h-[50vh] bg-[radial-gradient(ellipse_at_top,_var(--tw-gradient-stops))] from-emerald-900/20 via-black to-black pointer-events-none z-0" />
+      <div className="fixed top-[-10%] left-[-10%] w-[120%] h-[50vh] bg-top-glow pointer-events-none z-0" />
       <header className="flex items-center justify-between mb-10 relative z-10">
         <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center shadow-[0_0_20px_rgba(52,211,153,0.4)]">
+          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center shadow-lg">
             <Zap size={20} className="text-black" />
           </div>
           <h1 className="text-2xl font-black text-white font-outfit uppercase tracking-tight">FocusFine</h1>
@@ -336,6 +395,15 @@ const DashboardView = ({
           <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Ironclad Active</span>
         </div>
       </header>
+
+      <div className="flex justify-end mb-4 relative z-10">
+        <button 
+          onClick={() => toggleStrictMode(!stats.strictMode)}
+          className={`px-4 py-2 rounded-full text-xs font-bold transition-all border ${stats.strictMode ? 'bg-red-500/20 border-red-500 text-red-500 shadow-glow-red' : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
+        >
+          {stats.strictMode ? 'STRICT MODE ACTIVE' : 'ENABLE STRICT MODE'}
+        </button>
+      </div>
 
       <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8 relative z-10">
         <div className="p-8 rounded-[2.5rem] bg-white text-black shadow-[0_20px_50px_rgba(255,255,255,0.1)] relative overflow-hidden group">
@@ -423,8 +491,8 @@ const DashboardView = ({
         <h2 className="text-xl font-bold mb-6 flex items-center gap-3 text-white font-outfit">
           <BarChart3 size={20} className="text-zinc-500" /> Executive summary
         </h2>
-        <StreakCard days={stats.streakDays} />
-        <WeeklyTrend data={weeklyData} />
+        <streakCard days={stats.streakDays} />
+        <weeklyTrend data={weeklyData} />
       </div>
     </div>
   );
@@ -436,6 +504,9 @@ export default function App() {
   const [step, setStep] = useState<AppState>('loading');
   const [onboardingStep, setOnboardingStep] = useState(0);
 
+  // Permissions state
+  const [perms, setPerms] = useState({ usageAccess: false, overlay: false });
+
   // Setup screen state
   const [installedApps, setInstalledApps] = useState<InstalledApp[]>([]);
   const [loadingApps, setLoadingApps] = useState(false);
@@ -445,23 +516,39 @@ export default function App() {
   const [stats, setStats] = useState<DashboardStats>(DEFAULT_STATS);
   const [weeklyData, setWeeklyData] = useState<WeeklyStatDay[]>([]);
 
-  useEffect(() => {
+  const refreshPerms = useCallback(() => {
     if (window.Android) {
       try {
-        const perms = JSON.parse(window.Android.isPermissionsGranted());
-        if (perms.onboardingComplete) {
-          const apps = JSON.parse(window.Android.getMonitoredApps());
-          setStep(apps.length > 0 ? 'dashboard' : 'setup');
-        } else {
-          setStep('onboarding');
-        }
+        const p = JSON.parse(window.Android.isPermissionsGranted());
+        setPerms({ usageAccess: p.usageAccess, overlay: p.overlay });
+        return p;
       } catch (e) {
+        return null;
+      }
+    }
+    return null;
+  }, []);
+
+  useEffect(() => {
+    const p = refreshPerms();
+    if (p) {
+      if (p.onboardingComplete) {
+        const apps = JSON.parse(window.Android!.getMonitoredApps());
+        setStep(apps.length > 0 ? 'dashboard' : 'setup');
+      } else {
         setStep('onboarding');
       }
     } else {
       setTimeout(() => setStep('onboarding'), 800);
     }
-  }, []);
+  }, [refreshPerms]);
+
+  // Re-check permissions when app window gains focus
+  useEffect(() => {
+    const handleFocus = () => refreshPerms();
+    window.addEventListener('focus', handleFocus);
+    return () => window.removeEventListener('focus', handleFocus);
+  }, [refreshPerms]);
 
   const loadSetupApps = () => {
     setLoadingApps(true);
@@ -525,8 +612,16 @@ export default function App() {
     const selected = installedApps.filter(a => a.isSelected);
     if (window.Android) {
       selected.forEach(app => window.Android!.saveApp(app.packageName, app.limitMinutes, app.appName));
+      window.Android.setOnboardingComplete(true);
     }
     setStep('dashboard');
+  };
+
+  const toggleStrictMode = (enabled: boolean) => {
+    if (window.Android) {
+      window.Android.setStrictMode(enabled);
+      setStats(prev => ({ ...prev, strictMode: enabled }));
+    }
   };
 
   if (step === 'loading') {
@@ -543,9 +638,34 @@ export default function App() {
     <div className="min-h-screen bg-black text-white font-sans selection:bg-emerald-500/30 selection:text-white">
       <AnimatePresence mode="wait">
         <motion.div key={step} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="min-h-screen">
-          {step === 'onboarding' && <OnboardingView onboardingStep={onboardingStep} setOnboardingStep={setOnboardingStep} setStep={setStep} />}
-          {step === 'setup' && <SetupView installedApps={installedApps} loadingApps={loadingApps} toggleApp={toggleApp} updateLimit={updateLimit} finishSetup={finishSetup} />}
-          {step === 'dashboard' && <DashboardView monitoredApps={monitoredApps} stats={stats} weeklyData={weeklyData} setStep={setStep} setMonitoredApps={setMonitoredApps} />}
+          {step === 'onboarding' && (
+            <OnboardingView 
+              onboardingStep={onboardingStep} 
+              setOnboardingStep={setOnboardingStep} 
+              setStep={setStep} 
+              perms={perms}
+              refreshPerms={refreshPerms}
+            />
+          )}
+          {step === 'setup' && (
+            <SetupView 
+              installedApps={installedApps} 
+              loadingApps={loadingApps} 
+              toggleApp={toggleApp} 
+              updateLimit={updateLimit} 
+              finishSetup={finishSetup} 
+            />
+          )}
+          {step === 'dashboard' && (
+            <DashboardView 
+              monitoredApps={monitoredApps} 
+              stats={stats} 
+              weeklyData={weeklyData} 
+              setStep={setStep} 
+              setMonitoredApps={setMonitoredApps} 
+              toggleStrictMode={toggleStrictMode}
+            />
+          )}
         </motion.div>
       </AnimatePresence>
     </div>

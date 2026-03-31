@@ -313,6 +313,11 @@ class FocusFineJavascriptInterface(
 
     // ── Internal helpers ──────────────────────────────────────────────────────
 
+    @JavascriptInterface
+    fun setOnboardingComplete(complete: Boolean) {
+        prefs.isOnboardingComplete = complete
+    }
+
     private fun hasUsageAccess(): Boolean {
         return try {
             val appOps = context.getSystemService(Context.APP_OPS_SERVICE) as AppOpsManager
@@ -321,7 +326,18 @@ class FocusFineJavascriptInterface(
                 Process.myUid(),
                 context.packageName
             )
-            mode == AppOpsManager.MODE_ALLOWED
+            val appOpsGranted = mode == AppOpsManager.MODE_ALLOWED
+            
+            // Smart Fallback: Actually try to query UsageStatsManager.
+            // If it returns any data, the permission is definitely working.
+            if (!appOpsGranted) {
+                val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as android.app.usage.UsageStatsManager
+                val now = System.currentTimeMillis()
+                val stats = usm.queryUsageStats(android.app.usage.UsageStatsManager.INTERVAL_DAILY, now - 1000 * 60, now)
+                stats != null && stats.isNotEmpty()
+            } else {
+                true
+            }
         } catch (e: Exception) { false }
     }
 
