@@ -89,6 +89,13 @@ class UsageMonitorService : Service() {
 
                 for (settings in enabledApps) {
                     val pkg = settings.packageName
+                    
+                    // Safety: Never lock or kill the timer app itself
+                    if (pkg == packageName) {
+                        lockedAppsThisSession.remove(pkg)
+                        continue
+                    }
+
                     val usageStat = statsMap[pkg]
                     val usedMinutes = if (usageStat != null) usageStat.totalTimeInForeground / 1000L / 60L else 0L
 
@@ -114,23 +121,27 @@ class UsageMonitorService : Service() {
                         val activeUnlocks = db.paymentDao().getActiveUnlocks(pkg, now)
                         if (activeUnlocks.isEmpty()) {
                             isAnyAppLockedRightNow = true
+                            
+                            // 1. Show Toast ONLY ONCE when the limit is breached
                             if (!lockedAppsThisSession.contains(pkg)) {
                                 lockedAppsThisSession.add(pkg)
-                                
-                                // Show Toast before launching lock
                                 handler.post {
-                                    android.widget.Toast.makeText(this@UsageMonitorService, "${settings.appName}: Limit exceeded", android.widget.Toast.LENGTH_SHORT).show()
+                                    android.widget.Toast.makeText(applicationContext, "${settings.appName}: Limit exceeded", android.widget.Toast.LENGTH_SHORT).show()
                                 }
-
-                                launchLockScreen(pkg, settings.appName)
-
-                                // Kill background processes to prevent bypass
+                                
+                                // One-time background kill boost
                                 try {
                                     val am = getSystemService(Context.ACTIVITY_SERVICE) as android.app.ActivityManager
                                     am.killBackgroundProcesses(pkg)
                                 } catch (e: Exception) {
                                     Log.e(TAG, "Failed to kill process for $pkg", e)
                                 }
+                            }
+
+                            // 2. Continuous Locking: If the user is currently in the forbidden app,
+                            // we KEEP launching the lock screen to prevent bypass.
+                            if (currentApp == pkg) {
+                                launchLockScreen(pkg, settings.appName)
                             }
                         } else {
                             // Paid unlock is active
@@ -141,7 +152,7 @@ class UsageMonitorService : Service() {
                     }
                 }
 
-                // Uninstall prevention block
+                // Uninstall prevention block (for settings and installer)
                 val systemAppsToCheck = listOf(
                     "com.android.settings", 
                     "com.google.android.packageinstaller",
@@ -150,14 +161,8 @@ class UsageMonitorService : Service() {
                 )
                 
                 if (isAnyAppLockedRightNow && currentApp != null && systemAppsToCheck.contains(currentApp)) {
-                    if (!lockedAppsThisSession.contains(currentApp)) {
-                        lockedAppsThisSession.add(currentApp)
-                        launchLockScreen(currentApp, "System Blocked")
-                    }
-                } else {
-                    // Remove system apps from locked session if we aren't currently blocking them
-                    // but ONLY if they are not the active foreground app we should be blocking
-                    lockedAppsThisSession.removeAll(systemAppsToCheck.filter { it != currentApp })
+                    // Constant re-locking for system apps if an app limit is breached
+                    launchLockScreen(currentApp, "System Blocked")
                 }
             }
         } catch (e: Exception) {
@@ -178,6 +183,8 @@ class UsageMonitorService : Service() {
         val intent = Intent(this, OverlayActivity::class.java).apply {
             addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
             addFlags(Intent.FLAG_ACTIVITY_SINGLE_TOP)
+            addFlags(Intent.FLAG_ACTIVITY_REORDER_TO_FRONT)
+            addFlags(Intent.FLAG_ACTIVITY_CLEAR_TOP)
             putExtra("LOCKED_PACKAGE", packageName)
             putExtra("APP_NAME", appName)
             putExtra("STRICT_MODE", strictMode)
