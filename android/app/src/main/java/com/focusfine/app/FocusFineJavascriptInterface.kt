@@ -87,23 +87,17 @@ class FocusFineJavascriptInterface(
 
     // ── Installed Apps ────────────────────────────────────────────────────────
 
-    /** Returns JSON array of {packageName, appName} for all non-system launchable apps. */
+    /** Returns JSON array of {packageName, appName} for all launchable apps. */
     @JavascriptInterface
     fun getInstalledApps(): String {
         val pm = context.packageManager
         val launchIntent = Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_LAUNCHER)
         val apps = pm.queryIntentActivities(launchIntent, 0)
             .filter { info ->
-                val pkg = info.activityInfo.packageName
-                if (pkg == context.packageName) return@filter false
-                // Use the ApplicationInfo already inside ResolveInfo — avoids a separate
-                // pm.getApplicationInfo() call that throws on Android 11+ for some packages
-                val appInfo = info.activityInfo.applicationInfo
-                val isSystem = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_SYSTEM) != 0
-                val isUpdated = (appInfo.flags and android.content.pm.ApplicationInfo.FLAG_UPDATED_SYSTEM_APP) != 0
-                // Include user-installed apps and updated system apps (YouTube, Chrome, etc.)
-                // Exclude pure system apps (Settings, Camera, SIM Toolkit, Files, etc.)
-                !isSystem || isUpdated
+                // Only exclude FocusFine itself — show everything else that appears in the launcher.
+                // On many OEM devices (Realme, Oppo etc.) social apps ship preinstalled with
+                // FLAG_SYSTEM set, so a system-flag filter would silently hide them.
+                info.activityInfo.packageName != context.packageName
             }
             .sortedBy { it.loadLabel(pm).toString().lowercase() }
 

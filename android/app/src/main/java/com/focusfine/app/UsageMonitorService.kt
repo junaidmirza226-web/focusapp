@@ -13,23 +13,36 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.util.Log
+import android.view.LayoutInflater
+import android.view.View
+import android.view.WindowManager
+import android.graphics.PixelFormat
+import android.widget.Button
+import android.widget.TextView
 import com.focusfine.app.db.AppUsage
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
 import java.util.Calendar
 
 class UsageMonitorService : Service() {
 
     private val handler = Handler(Looper.getMainLooper())
-    private val coroutineScope = CoroutineScope(Dispatchers.Default)
+    // SupervisorJob: a failed child coroutine does NOT cancel the scope or crash the process.
+    private val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
 
-    // Tracks apps that have been locked this session (cleared only on service restart)
-    private val lockedAppsThisSession = mutableSetOf<String>()
+    // Thread-safe set — multiple 1-second coroutines run concurrently and all touch this set.
+    // A plain mutableSetOf() is a LinkedHashSet which is not thread-safe.
+    private val lockedAppsThisSession: MutableSet<String> =
+        java.util.Collections.synchronizedSet(mutableSetOf())
 
     // Used to detect day changes and reset the "warned" flag in UserSettings
     private var lastTodayStart = 0L
     private var isAnyAppLockedRightNow = false
+    
+    // The invincible floating lock view
+    private var floatingLockView: View? = null
     
     // Live Tracker Properties to instantly catch the usermid-session
     private var cachedSessionApp: String? = null
@@ -103,6 +116,7 @@ class UsageMonitorService : Service() {
             if (statsMap == null || statsMap.isEmpty()) return
 
             coroutineScope.launch {
+              try {
                 // Reset warned flags at the start of a new day
                 if (todayStart != lastTodayStart) {
                     lastTodayStart = todayStart
@@ -112,6 +126,7 @@ class UsageMonitorService : Service() {
                 val db = FocusFineApp.database
                 val enabledApps = db.userSettingsDao().getAllSettings().filter { it.isEnabled }
                 var isAnyAppLockedRightNow = false
+                var shouldShowFloatingLockFor: Pair<String, String>? = null
 
                 for (settings in enabledApps) {
                     val pkg = settings.packageName
@@ -176,14 +191,9 @@ class UsageMonitorService : Service() {
                                 }
                             }
 
-                            // 2. Continuous Locking: If the user is currently in the forbidden app,
-                            // we KEEP launching the lock screen to prevent bypass.
+                            // 2. Continuous Locking: Mark this app for the floating view override
                             if (currentApp == pkg) {
-                                try {
-                                    launchLockScreen(pkg, settings.appName)
-                                } catch (e: Exception) {
-                                    Log.e(TAG, "Failed to launch lock screen", e)
-                                }
+                                shouldShowFloatingLockFor = Pair(pkg, settings.appName)
                             }
                         } else {
                             // Paid unlock is active
@@ -204,8 +214,22 @@ class UsageMonitorService : Service() {
                 
                 if (isAnyAppLockedRightNow && currentApp != null && systemAppsToCheck.contains(currentApp)) {
                     // Constant re-locking for system apps if an app limit is breached
-                    launchLockScreen(currentApp, "System Blocked")
+                    shouldShowFloatingLockFor = Pair(currentApp, "System Blocked")
                 }
+
+                // Apply the floating lock state safely on the Main Thread
+                handler.post {
+                    if (shouldShowFloatingLockFor != null) {
+                        showFloatingLock(shouldShowFloatingLockFor!!.first, shouldShowFloatingLockFor!!.second)
+                    } else {
+                        removeFloatingLock()
+                    }
+                }
+              } catch (e: Exception) {
+                // Catch all errors inside the coroutine so they never escape to crash the process.
+                // With SupervisorJob the scope survives, but we still want no silent data loss.
+                Log.e(TAG, "Error in monitor coroutine", e)
+              }
             }
         } catch (e: Exception) {
             Log.e(TAG, "Error checking usage", e)
@@ -220,16 +244,70 @@ class UsageMonitorService : Service() {
         Log.d(TAG, "Daily warning flags reset")
     }
 
-    private fun launchLockScreen(packageName: String, appName: String) {
-        val strictMode = FocusFineApp.preferences.isStrictModeEnabled
-        val intent = Intent(this, OverlayActivity::class.java).apply {
-            addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-            putExtra("LOCKED_PACKAGE", packageName)
-            putExtra("APP_NAME", appName)
-            putExtra("STRICT_MODE", strictMode)
+    private fun showFloatingLock(packageName: String, appName: String) {
+        if (floatingLockView != null) {
+            // Update the text dynamically if already showing
+            try {
+                floatingLockView?.findViewById<TextView>(R.id.overlay_lock_message)?.text = "Daily limit reached for $appName"
+            } catch (e: Exception) {}
+            return
         }
-        startActivity(intent)
-        Log.d(TAG, "Lock screen launched for $appName ($packageName), strict=$strictMode")
+        
+        try {
+            val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+            val params = WindowManager.LayoutParams(
+                WindowManager.LayoutParams.MATCH_PARENT,
+                WindowManager.LayoutParams.MATCH_PARENT,
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) 
+                    WindowManager.LayoutParams.TYPE_APPLICATION_OVERLAY 
+                else 
+                    WindowManager.LayoutParams.TYPE_PHONE,
+                WindowManager.LayoutParams.FLAG_NOT_FOCUSABLE or
+                WindowManager.LayoutParams.FLAG_LAYOUT_IN_SCREEN or
+                WindowManager.LayoutParams.FLAG_HARDWARE_ACCELERATED,
+                PixelFormat.TRANSLUCENT
+            )
+            
+            val view = LayoutInflater.from(this).inflate(R.layout.window_lock_overlay, null)
+            view.findViewById<TextView>(R.id.overlay_lock_message).text = "Daily limit reached for $appName"
+            
+            val strictMode = FocusFineApp.preferences.isStrictModeEnabled
+            if (strictMode) {
+                view.findViewById<Button>(R.id.overlay_btn_pay_fine).visibility = View.GONE
+                view.findViewById<TextView>(R.id.overlay_strict_mode_banner).visibility = View.VISIBLE
+            } else {
+                view.findViewById<Button>(R.id.overlay_btn_pay_fine).setOnClickListener {
+                    // Tapping the floating overlay counts as a USER INTERACTION! 
+                    // This grants us immediate permission to launch our Payment Activity from the background!
+                    val intent = Intent(this@UsageMonitorService, OverlayActivity::class.java).apply {
+                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                        putExtra("LOCKED_PACKAGE", packageName)
+                        putExtra("APP_NAME", appName)
+                        putExtra("STRICT_MODE", false)
+                    }
+                    startActivity(intent)
+                }
+            }
+            
+            windowManager.addView(view, params)
+            floatingLockView = view
+            Log.d(TAG, "Invincible WindowManager lock deployed over $appName ($packageName)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to deploy WindowManager overlay! Missing permission?", e)
+        }
+    }
+
+    private fun removeFloatingLock() {
+        floatingLockView?.let { view ->
+            try {
+                val windowManager = getSystemService(Context.WINDOW_SERVICE) as WindowManager
+                windowManager.removeView(view)
+                floatingLockView = null
+                Log.d(TAG, "WindowManager lock retracted.")
+            } catch (e: Exception) {
+                Log.e(TAG, "Error removing floating view", e)
+            }
+        }
     }
 
     private fun sendWarningNotification(packageName: String, appName: String, remainingMinutes: Long) {
