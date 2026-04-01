@@ -8,6 +8,7 @@ import android.os.Build
 import android.os.Bundle
 import android.os.Process
 import android.provider.Settings
+import android.view.accessibility.AccessibilityManager
 import android.webkit.WebView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
@@ -21,6 +22,7 @@ class MainActivity : AppCompatActivity() {
         private const val USAGE_ACCESS_PERMISSION_CODE = 100
         private const val OVERLAY_PERMISSION_CODE = 101
         private const val NOTIFICATION_PERMISSION_CODE = 102
+        private const val ACCESSIBILITY_PERMISSION_CODE = 103
     }
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -62,6 +64,7 @@ class MainActivity : AppCompatActivity() {
             !hasUsageAccessPermission() -> requestUsageAccessPermission()
             !hasOverlayPermissionGranted() -> requestOverlayPermission()
             !hasNotificationPermission() -> requestNotificationPermission()
+            !hasAccessibilityServiceEnabled() -> requestAccessibilityService()
             else -> {
                 FocusFineApp.preferences.isOnboardingComplete = true
                 startMonitoringServiceIfNeeded()
@@ -110,6 +113,29 @@ class MainActivity : AppCompatActivity() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
             ActivityCompat.requestPermissions(this, arrayOf(android.Manifest.permission.POST_NOTIFICATIONS), NOTIFICATION_PERMISSION_CODE)
         }
+    }
+
+    fun hasAccessibilityServiceEnabled(): Boolean {
+        val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
+        val enabledServices = am.getEnabledAccessibilityServiceList(
+            android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_ALL_MASK
+        )
+        return enabledServices.any {
+            it.resolveInfo.serviceInfo.packageName == packageName &&
+            it.resolveInfo.serviceInfo.name == FocusFineAccessibilityService::class.java.name
+        }
+    }
+
+    private fun requestAccessibilityService() {
+        Toast.makeText(
+            this,
+            "Enable FocusFine in Accessibility Settings to enforce app locks",
+            Toast.LENGTH_LONG
+        ).show()
+        startActivityForResult(
+            Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS),
+            ACCESSIBILITY_PERMISSION_CODE
+        )
     }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {

@@ -39,11 +39,26 @@ class FocusFineJavascriptInterface(
         val usageAccess = hasUsageAccess()
         val overlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
             Settings.canDrawOverlays(context) else true
+        val accessibility = hasAccessibilityServiceEnabled()
         return JSONObject().apply {
             put("usageAccess", usageAccess)
             put("overlay", overlay)
+            put("accessibility", accessibility)
             put("onboardingComplete", prefs.isOnboardingComplete)
         }.toString()
+    }
+
+    @JavascriptInterface
+    fun isAccessibilityGranted(): Boolean = hasAccessibilityServiceEnabled()
+
+    @JavascriptInterface
+    fun requestAccessibilityService() {
+        activityRef.get()?.runOnUiThread {
+            context.startActivity(
+                Intent(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                    .addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+            )
+        }
     }
 
     @JavascriptInterface
@@ -310,6 +325,17 @@ class FocusFineJavascriptInterface(
     @JavascriptInterface
     fun setOnboardingComplete(complete: Boolean) {
         prefs.isOnboardingComplete = complete
+    }
+
+    private fun hasAccessibilityServiceEnabled(): Boolean {
+        val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE)
+            as android.view.accessibility.AccessibilityManager
+        return am.getEnabledAccessibilityServiceList(
+            android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_ALL_MASK
+        ).any {
+            it.resolveInfo.serviceInfo.packageName == context.packageName &&
+            it.resolveInfo.serviceInfo.name == FocusFineAccessibilityService::class.java.name
+        }
     }
 
     private fun hasUsageAccess(): Boolean {

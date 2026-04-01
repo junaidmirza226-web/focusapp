@@ -17,6 +17,16 @@ class FocusFineApp : Application() {
 
         const val NOTIFICATION_CHANNEL_ID = "focus_fine_channel"
         const val NOTIFICATION_CHANNEL_WARNING_ID = "focus_fine_warnings"
+
+        // Shared between UsageMonitorService (writer) and FocusFineAccessibilityService (reader).
+        // ConcurrentHashMap.newKeySet() is thread-safe and O(1) for contains/add/remove.
+        val lockedPackages: MutableSet<String> =
+            java.util.concurrent.ConcurrentHashMap.newKeySet()
+
+        // Maps packageName → display name so the AccessibilityService can title the overlay
+        // without a DB lookup on the hot path.
+        val lockedPackageNames: java.util.concurrent.ConcurrentHashMap<String, String> =
+            java.util.concurrent.ConcurrentHashMap()
     }
 
     override fun onCreate() {

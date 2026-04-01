@@ -2,4 +2,5 @@
 <resources>
     <string name="app_name">FocusFine</string>
     <string name="app_description">Digital Discipline Monitor</string>
+    <string name="accessibility_service_description">FocusFine uses Accessibility to instantly block apps the moment your daily limit is reached — even when you reopen them from Recent Apps or notifications. No usage data is collected.</string>
 </resources>

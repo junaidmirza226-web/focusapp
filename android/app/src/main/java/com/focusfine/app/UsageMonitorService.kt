@@ -182,8 +182,13 @@ class UsageMonitorService : Service() {
                         val activeUnlocks = db.paymentDao().getActiveUnlocks(pkg, now)
                         if (activeUnlocks.isEmpty()) {
                             isAnyAppLockedRightNow = true
-                            
-                            // 1. Show Toast ONLY ONCE when the limit is breached
+
+                            // Publish to shared set so AccessibilityService can redirect instantly
+                            // without polling or DB access on its hot path.
+                            FocusFineApp.lockedPackages.add(pkg)
+                            FocusFineApp.lockedPackageNames[pkg] = settings.appName
+
+                            // Show Toast ONLY ONCE when the limit is first breached
                             if (!lockedAppsThisSession.contains(pkg)) {
                                 lockedAppsThisSession.add(pkg)
                                 handler.post {
@@ -191,16 +196,21 @@ class UsageMonitorService : Service() {
                                 }
                             }
 
-                            // 2. Continuous Locking: Mark this app for the floating view override
+                            // WindowManager overlay as visual backup (AccessibilityService is primary)
                             if (currentApp == pkg) {
                                 shouldShowFloatingLockFor = Pair(pkg, settings.appName)
                             }
                         } else {
-                            // Paid unlock is active
+                            // Paid unlock is active — remove from locked set so overlay is dismissed
                             lockedAppsThisSession.remove(pkg)
+                            FocusFineApp.lockedPackages.remove(pkg)
+                            FocusFineApp.lockedPackageNames.remove(pkg)
                         }
                     } else {
+                        // Under limit or limit removed — clear lock state
                         lockedAppsThisSession.remove(pkg)
+                        FocusFineApp.lockedPackages.remove(pkg)
+                        FocusFineApp.lockedPackageNames.remove(pkg)
                     }
                 }
 
