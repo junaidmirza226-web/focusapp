@@ -214,10 +214,14 @@ class FocusFineJavascriptInterface(
             db.userSettingsDao().getAllSettings()
                 .filter { it.isEnabled }
                 .forEach { app ->
-                    val used = db.appUsageDao().getUsageForDate(app.packageName, todayStart)?.totalTimeMinutes ?: 0L
+                    val rawUsed = db.appUsageDao().getUsageForDate(app.packageName, todayStart)?.totalTimeMinutes ?: 0L
+                    // Subtract baseUsageMinutes so the UI shows usage since limit was set,
+                    // not total usage from midnight. Matches the lock logic in UsageMonitorService.
+                    val effectiveBase = if (todayStart > app.lastResetDate) 0L else app.baseUsageMinutes
+                    val effectiveUsed = (rawUsed - effectiveBase).coerceAtLeast(0L)
                     result.put(JSONObject().apply {
                         put("packageName", app.packageName)
-                        put("usedMinutes", used)
+                        put("usedMinutes", effectiveUsed)
                         put("limitMinutes", app.dailyLimitMinutes)
                     })
                 }
@@ -371,10 +375,13 @@ class FocusFineJavascriptInterface(
     }
 
     private fun getCurrentTotalUsageToday(packageName: String): Long {
+        // MUST use queryAndAggregateUsageStats — same method as UsageMonitorService.
+        // queryUsageStats(INTERVAL_DAILY) returns different values and causes the effective
+        // usage to go negative (clamped to 0), preventing locks from ever firing.
         val usm = context.getSystemService(Context.USAGE_STATS_SERVICE) as android.app.usage.UsageStatsManager
         val now = System.currentTimeMillis()
-        val stats = usm.queryUsageStats(android.app.usage.UsageStatsManager.INTERVAL_DAILY, getTodayStartMillis(), now)
-        val usage = stats.find { it.packageName == packageName }
+        val statsMap = usm.queryAndAggregateUsageStats(getTodayStartMillis(), now)
+        val usage = statsMap?.get(packageName)
         return if (usage != null) usage.totalTimeInForeground / 1000L / 60L else 0L
     }
 }
