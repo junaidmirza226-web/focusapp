@@ -13,7 +13,24 @@
       "Bash(rm \"D:/gradle-temp.zip\")",
       "Bash(ls \"D:\\\\Apk Build\\\\focusapp\\\\android\\\\app\\\\src\\\\main\\\\res\"\" 2>/dev/null || echo \"NOT FOUND \")",
       "Bash(gradle wrapper:*)",
-      "Bash(gh api:*)"
+      "Bash(gh api:*)",
+      "Bash(gh run:*)",
+      "WebFetch(domain:github.com)",
+      "Bash(where ffmpeg:*)",
+      "Read(//c/ffmpeg/bin/**)",
+      "Read(//c/ProgramData/chocolatey/bin/**)",
+      "Bash(winget install:*)",
+      "Bash(pip install:*)",
+      "Read(//c/Users/Hp/AppData/Local/Microsoft/WinGet/**)",
+      "Bash(choco install:*)",
+      "Bash(curl -L \"https://www.gyan.dev/ffmpeg/builds/ffmpeg-release-essentials.zip\" -o /tmp/ffmpeg.zip)",
+      "Bash(find /c/Users/Hp/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg* -name \"ffmpeg.exe\")",
+      "Bash(FFMPEG=\"/c/Users/Hp/AppData/Local/Microsoft/WinGet/Packages/Gyan.FFmpeg_Microsoft.Winget.Source_8wekyb3d8bbwe/ffmpeg-8.1-full_build/bin/ffmpeg.exe\")",
+      "Bash(\"$FFMPEG\" -i \"/d/Apk Build/focusapp/App recording.mp4\")",
+      "Bash(mkdir -p /tmp/video_frames)",
+      "Bash(\"$FFMPEG\" -i \"/d/Apk Build/focusapp/App recording.mp4\" -vf \"fps=1/5\" -q:v 2 /tmp/video_frames/frame_%03d.jpg -y)",
+      "Bash(mkdir -p /tmp/vf2)",
+      "Bash(\"$FFMPEG\" -i \"/d/Apk Build/focusapp/App recording.mp4\" -vf \"fps=1/2\" -q:v 1 /tmp/vf2/f_%04d.jpg -y)"
     ]
   }
 }

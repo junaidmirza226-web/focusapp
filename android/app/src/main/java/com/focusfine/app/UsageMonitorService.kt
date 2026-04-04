@@ -129,6 +129,7 @@ class UsageMonitorService : Service() {
                 val db = FocusFineApp.database
                 val enabledApps = db.userSettingsDao().getAllSettings().filter { it.isEnabled }
                 var isAnyAppLockedRightNow = false
+                var shouldShowFloatingLockFor: Pair<String, String>? = null
 
                 for (settings in enabledApps) {
                     val pkg = settings.packageName
@@ -186,7 +187,6 @@ class UsageMonitorService : Service() {
                             isAnyAppLockedRightNow = true
 
                             // Publish to shared set so AccessibilityService can redirect instantly
-                            // without polling or DB access on its hot path.
                             FocusFineApp.lockedPackages.add(pkg)
                             FocusFineApp.lockedPackageNames[pkg] = settings.appName
 
@@ -198,48 +198,43 @@ class UsageMonitorService : Service() {
                                 }
                             }
 
-                            // If user is CURRENTLY in the blocked app, launch OverlayActivity directly.
-                            // AccessibilityService only fires on window CHANGES — if the user was already
-                            // in the app when the limit expired, we must force the overlay from the service.
-                            // Throttle to max once every 3 seconds to avoid spamming.
-                            val now2 = System.currentTimeMillis()
-                            if (currentApp == pkg && (now2 - lastOverlayLaunchTime) > 3000L) {
-                                lastOverlayLaunchTime = now2
-                                handler.post {
-                                    try {
-                                        val intent = Intent(this@UsageMonitorService, OverlayActivity::class.java).apply {
-                                            addFlags(
-                                                Intent.FLAG_ACTIVITY_NEW_TASK or
-                                                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                                                Intent.FLAG_ACTIVITY_SINGLE_TOP
-                                            )
-                                            putExtra("LOCKED_PACKAGE", pkg)
-                                            putExtra("APP_NAME", settings.appName)
-                                            putExtra("STRICT_MODE", FocusFineApp.preferences.isStrictModeEnabled)
-                                        }
-                                        startActivity(intent)
-                                    } catch (e: Exception) {
-                                        Log.e(TAG, "Failed to launch OverlayActivity from service", e)
-                                    }
-                                }
+                            // Mark this app for the invincible floating blackout
+                            if (currentApp == pkg) {
+                                shouldShowFloatingLockFor = Pair(pkg, settings.appName)
                             }
                         } else {
-                            // Paid unlock is active — remove from locked set so overlay is dismissed
+                            // Paid unlock is active
                             lockedAppsThisSession.remove(pkg)
                             FocusFineApp.lockedPackages.remove(pkg)
                             FocusFineApp.lockedPackageNames.remove(pkg)
                         }
                     } else {
-                        // Under limit or limit removed — clear lock state
+                        // Under limit
                         lockedAppsThisSession.remove(pkg)
                         FocusFineApp.lockedPackages.remove(pkg)
                         FocusFineApp.lockedPackageNames.remove(pkg)
                     }
                 }
 
-                // Remove any stale floating overlay if no app is locked right now
-                if (!isAnyAppLockedRightNow) {
-                    handler.post { removeFloatingLock() }
+                // Uninstall prevention block (for settings and installer)
+                val systemAppsToCheck = listOf(
+                    "com.android.settings", 
+                    "com.google.android.packageinstaller",
+                    "com.miui.securitycenter",
+                    "com.android.vending"
+                )
+                
+                if (isAnyAppLockedRightNow && currentApp != null && systemAppsToCheck.contains(currentApp)) {
+                    shouldShowFloatingLockFor = Pair(currentApp, "System Blocked")
+                }
+
+                // Apply the floating lock state safely on the Main Thread
+                handler.post {
+                    if (shouldShowFloatingLockFor != null) {
+                        showFloatingLock(shouldShowFloatingLockFor!!.first, shouldShowFloatingLockFor!!.second)
+                    } else {
+                        removeFloatingLock()
+                    }
                 }
               } catch (e: Exception) {
                 // Catch all errors inside the coroutine so they never escape to crash the process.

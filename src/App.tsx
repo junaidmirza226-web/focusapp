@@ -228,6 +228,7 @@ const OnboardingView = ({
   
   const current = steps[onboardingStep];
   const isLast = onboardingStep === steps.length - 1;
+  const showRestrictedHelp = onboardingStep === 1 || onboardingStep === 2;
 
   // Auto-advance if already granted
   useEffect(() => {
@@ -252,36 +253,57 @@ const OnboardingView = ({
   };
 
   return (
-    <div className="flex flex-col items-center justify-center min-h-[90vh] text-center px-6 relative overflow-hidden">
-      <div className="absolute top-1/4 left-1/2 -translate-x-1/2 w-96 h-96 bg-emerald-500/10 rounded-full blur-[100px] pointer-events-none" />
-      <motion.div key={onboardingStep} initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, y: -20 }} className="max-w-md w-full relative z-10">
-        <div className="mb-10 flex justify-center">
-          <motion.div 
-            animate={{ y: [0, -10, 0] }} 
-            transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
-            className="w-32 h-32 glass-card rounded-full flex items-center justify-center border-white/10 relative">
-            <div className="absolute inset-0 rounded-full border border-white/20 scale-105 opacity-50" />
-            {current.icon}
-          </motion.div>
-        </div>
-        <h1 className="text-4xl font-black tracking-tight mb-4 text-white font-outfit">{current.title}</h1>
-        <p className="text-zinc-400 text-lg mb-12 leading-relaxed">{current.description}</p>
-        <div className="space-y-4">
-          <Button 
-            onClick={handleNextTap} 
-            ariaLabel={current.permission || "Next"} 
-            className={`w-full py-5 text-lg shadow-lg ${current.isGranted ? 'bg-emerald-500 text-black' : ''}`}
+    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="fixed inset-0 bg-black flex flex-col p-8 md:p-16 z-[100] overflow-y-auto">
+      <div className="flex-1 flex flex-col items-center justify-center space-y-10 max-w-sm mx-auto w-full">
+        <motion.div 
+          key={onboardingStep}
+          initial={{ y: 20, opacity: 0 }}
+          animate={{ y: 0, opacity: 1 }}
+          transition={{ type: 'spring', damping: 20 }}
+          className="p-10 rounded-[3rem] bg-zinc-900/50 border border-white/5 backdrop-blur-3xl shadow-2xl relative overflow-hidden w-full"
+        >
+          <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full blur-3xl -mr-16 -mt-16" />
+          <div className="relative z-10 flex flex-col items-center text-center">
+            <div className="mb-8 p-6 rounded-3xl bg-zinc-900 border border-white/10 shadow-inner">
+              {current.icon}
+            </div>
+            <h2 className="text-4xl font-black text-white mb-4 font-outfit uppercase tracking-tighter leading-none">{current.title}</h2>
+            <p className="text-zinc-400 text-sm font-medium leading-relaxed">{current.description}</p>
+          </div>
+        </motion.div>
+
+        <div className="flex flex-col gap-4 w-full">
+          <button 
+            onClick={handleNextTap}
+            disabled={onboardingStep > 0 && onboardingStep < 3 && current.isGranted}
+            className={`w-full py-6 rounded-[2rem] font-black text-lg font-outfit uppercase tracking-widest transition-all shadow-xl hover:scale-[1.02] active:scale-[0.98] ${onboardingStep === 0 ? 'bg-white text-black' : (current.isGranted ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-white text-black shadow-white/10')}`}
           >
-            {current.permission || (isLast ? "Complete Setup" : "Begin Setup")}
-            {!current.isGranted && !isLast && onboardingStep > 0 && <ArrowRight size={20} className="inline ml-2" />}
-          </Button>
+            {onboardingStep === 0 ? 'Begin Setup' : current.permission || 'Next'}
+          </button>
           
-          {!current.isGranted && onboardingStep > 0 && onboardingStep < 3 && (
-            <button 
-              onClick={refreshPerms}
-              className="text-emerald-400 text-sm font-bold uppercase tracking-widest mt-4 hover:text-emerald-300"
+          {showRestrictedHelp && !current.isGranted && (
+            <motion.div 
+              initial={{ opacity: 0 }} 
+              animate={{ opacity: 1 }}
+              className="p-5 rounded-[1.5rem] bg-zinc-900/80 border border-zinc-800/50 backdrop-blur-md"
             >
-              Check Status
+              <div className="flex items-start gap-3">
+                <div className="p-1.5 rounded-full bg-blue-500/20 text-blue-400 mt-0.5">
+                  <ShieldCheck size={14} />
+                </div>
+                <div>
+                  <h4 className="text-sm font-bold text-white font-outfit">Can't enable settings?</h4>
+                  <p className="text-[11px] text-zinc-500 mt-1 leading-normal">
+                    Android may restrict sideloaded apps. To fix it: Open <strong>App Info</strong> &gt; tap <strong>three dots</strong> (top-right) &gt; select <strong>"Allow restricted settings"</strong>.
+                  </p>
+                </div>
+              </div>
+            </motion.div>
+          )}
+
+          {isLast && (
+            <button onClick={() => setStep('setup')} className="w-full py-4 text-zinc-600 text-xs font-bold uppercase tracking-widest hover:text-zinc-400">
+              Skip for now
             </button>
           )}
 
@@ -291,8 +313,8 @@ const OnboardingView = ({
             ))}
           </div>
         </div>
-      </motion.div>
-    </div>
+      </div>
+    </motion.div>
   );
 };
 
