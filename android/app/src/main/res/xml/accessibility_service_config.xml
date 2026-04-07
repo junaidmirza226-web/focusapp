@@ -1,11 +1,11 @@
 <?xml version="1.0" encoding="utf-8"?>
 <!--
   Configuration for FocusFineAccessibilityService.
-  Only listens for window-state-changed events — no content reading, no key logging.
+  Listens for app-window transition events only — no content reading, no key logging.
   The description shown to users in Settings → Accessibility is set in strings.xml.
 -->
 <accessibility-service xmlns:android="http://schemas.android.com/apk/res/android"
-    android:accessibilityEventTypes="typeWindowStateChanged"
+    android:accessibilityEventTypes="typeWindowStateChanged|typeWindowsChanged"
     android:accessibilityFeedbackType="feedbackGeneric"
     android:canRetrieveWindowContent="false"
     android:description="@string/accessibility_service_description"

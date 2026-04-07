@@ -201,6 +201,11 @@ class UsageMonitorService : Service() {
                             // Mark this app for the invincible floating blackout
                             if (currentApp == pkg) {
                                 shouldShowFloatingLockFor = Pair(pkg, settings.appName)
+                                FocusFineAccessibilityService.forceBlockPackage(
+                                    pkg,
+                                    settings.appName.ifEmpty { pkg },
+                                    FocusFineApp.preferences.isStrictModeEnabled
+                                )
                             }
                         } else {
                             // Paid unlock is active
