@@ -191,19 +191,22 @@ class FocusFineAccessibilityService : AccessibilityService() {
         lastRedirectAt = now
 
         Log.d(TAG, "Blocking $packageName ($appName) — limit exceeded")
-        performGlobalAction(GLOBAL_ACTION_HOME)
-
         val intent = Intent(this, OverlayActivity::class.java).apply {
             addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_CLEAR_TOP or
-                Intent.FLAG_ACTIVITY_SINGLE_TOP
+                Intent.FLAG_ACTIVITY_CLEAR_TASK
             )
             putExtra("LOCKED_PACKAGE", packageName)
             putExtra("APP_NAME", appName)
             putExtra("STRICT_MODE", strictMode)
         }
-        startActivity(intent)
+
+        try {
+            startActivity(intent)
+        } catch (t: Throwable) {
+            Log.e(TAG, "Failed to launch lock screen; falling back to Home", t)
+            performGlobalAction(GLOBAL_ACTION_HOME)
+        }
     }
 
     private fun getTodayStartMillis(): Long {

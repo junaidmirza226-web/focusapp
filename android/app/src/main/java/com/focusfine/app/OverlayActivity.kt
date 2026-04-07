@@ -1,6 +1,7 @@
 package com.focusfine.app
 
 import android.content.Intent
+import android.graphics.Color
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -26,9 +27,10 @@ class OverlayActivity : AppCompatActivity() {
     private lateinit var lockedPackage: String
     private lateinit var appName: String
     private var isStrictMode = false
-    private lateinit var paymentManager: PaymentManager
+    private var paymentManager: PaymentManager? = null
     private val coroutineScope = CoroutineScope(Dispatchers.Main)
     private var isProcessing = false
+    private var purchasesUnavailable = false
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -47,27 +49,22 @@ class OverlayActivity : AppCompatActivity() {
         }
 
         handleIntent(intent)
-        setupPaymentButtons()
 
         // Close button always visible
         findViewById<Button>(R.id.btn_close).setOnClickListener { goHome() }
 
-        paymentManager = PaymentManager(this)
-        paymentManager.setPurchaseListener { success, payment ->
-            if (success && payment != null) {
-                showSuccessScreen(payment)
-            } else {
-                isProcessing = false
-                Toast.makeText(this, "Payment failed. Please try again.", Toast.LENGTH_SHORT).show()
-            }
+        if (!isStrictMode) {
+            initializePaymentManager()
         }
-        paymentManager.restorePurchases()
     }
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
         setIntent(intent)
         handleIntent(intent)
+        if (!isStrictMode && paymentManager == null && !purchasesUnavailable) {
+            initializePaymentManager()
+        }
     }
 
     private fun handleIntent(intent: Intent) {
@@ -80,19 +77,58 @@ class OverlayActivity : AppCompatActivity() {
             "You've reached your daily limit for $appName."
 
         // Payment buttons section
+        refreshLockModeUi()
+    }
+
+    private fun initializePaymentManager() {
+        try {
+            val manager = PaymentManager(this)
+            paymentManager = manager
+            manager.setPurchaseListener { success, payment ->
+                if (success && payment != null) {
+                    showSuccessScreen(payment)
+                } else {
+                    isProcessing = false
+                    Toast.makeText(this, "Payment failed. Please try again.", Toast.LENGTH_SHORT).show()
+                }
+            }
+            setupPaymentButtons()
+            manager.restorePurchases()
+        } catch (t: Throwable) {
+            purchasesUnavailable = true
+            paymentManager = null
+            Log.e(TAG, "Billing unavailable; keeping lock screen active without purchases", t)
+            refreshLockModeUi()
+        }
+    }
+
+    private fun refreshLockModeUi() {
         val paymentSection = findViewById<LinearLayout>(R.id.payment_section)
         val strictBanner = findViewById<TextView>(R.id.strict_mode_banner)
 
-        if (isStrictMode) {
-            paymentSection.visibility = View.GONE
-            strictBanner.visibility = View.VISIBLE
-        } else {
-            strictBanner.visibility = View.GONE
-            // Keep existing button setup or refresh if needed
+        when {
+            isStrictMode -> {
+                paymentSection.visibility = View.GONE
+                strictBanner.visibility = View.VISIBLE
+                strictBanner.setTextColor(Color.parseColor("#EF4444"))
+                strictBanner.text = "Strict Mode Active\nPay-to-unlock is disabled."
+            }
+            purchasesUnavailable -> {
+                paymentSection.visibility = View.GONE
+                strictBanner.visibility = View.VISIBLE
+                strictBanner.setTextColor(Color.parseColor("#F59E0B"))
+                strictBanner.text = "Unlock purchases are unavailable on this device.\nClose the app to continue."
+            }
+            else -> {
+                paymentSection.visibility = View.VISIBLE
+                strictBanner.visibility = View.GONE
+            }
         }
     }
 
     private fun setupPaymentButtons() {
+        val manager = paymentManager ?: return
+
         // Query how many times the user has already unlocked this app today
         // to apply escalating prices: 1st=$1, 2nd=$2, 3rd=$3
         coroutineScope.launch(Dispatchers.IO) {
@@ -128,7 +164,7 @@ class OverlayActivity : AppCompatActivity() {
                     setOnClickListener {
                         if (!isProcessing) {
                             isProcessing = true
-                            paymentManager.launchPurchaseFlow(this@OverlayActivity, PaymentManager.QUICK_UNLOCK_SKU, lockedPackage)
+                            manager.launchPurchaseFlow(this@OverlayActivity, PaymentManager.QUICK_UNLOCK_SKU, lockedPackage)
                         }
                     }
                 }
@@ -138,7 +174,7 @@ class OverlayActivity : AppCompatActivity() {
                     setOnClickListener {
                         if (!isProcessing) {
                             isProcessing = true
-                            paymentManager.launchPurchaseFlow(this@OverlayActivity, PaymentManager.EXTENDED_UNLOCK_SKU, lockedPackage)
+                            manager.launchPurchaseFlow(this@OverlayActivity, PaymentManager.EXTENDED_UNLOCK_SKU, lockedPackage)
                         }
                     }
                 }
@@ -148,7 +184,7 @@ class OverlayActivity : AppCompatActivity() {
                     setOnClickListener {
                         if (!isProcessing) {
                             isProcessing = true
-                            paymentManager.launchPurchaseFlow(this@OverlayActivity, PaymentManager.DAILY_PASS_SKU, lockedPackage)
+                            manager.launchPurchaseFlow(this@OverlayActivity, PaymentManager.DAILY_PASS_SKU, lockedPackage)
                         }
                     }
                 }
@@ -193,6 +229,6 @@ class OverlayActivity : AppCompatActivity() {
 
     override fun onDestroy() {
         super.onDestroy()
-        paymentManager.disconnect()
+        paymentManager?.disconnect()
     }
 }
