@@ -32,6 +32,7 @@ declare global {
       setStrictMode: (enabled: boolean) => void;
       requestUsageAccess: () => void;
       requestOverlay: () => void;
+      requestAccessibilityService: () => void;
       requestBatteryOptimization: () => void;
       setOnboardingComplete: (complete: boolean) => void;
     };
@@ -39,6 +40,12 @@ declare global {
 }
 
 type AppState = 'loading' | 'onboarding' | 'setup' | 'dashboard';
+
+type PermissionsState = {
+  usageAccess: boolean;
+  overlay: boolean;
+  accessibility: boolean;
+};
 
 interface InstalledApp {
   packageName: string;
@@ -79,6 +86,19 @@ const DEFAULT_STATS: DashboardStats = {
   timeSavedMinutes: 0,
   streakDays: 0,
   strictMode: false
+};
+
+const DEFAULT_PERMS: PermissionsState = {
+  usageAccess: false,
+  overlay: false,
+  accessibility: false
+};
+
+const getFirstIncompleteOnboardingStep = (perms: PermissionsState) => {
+  if (!perms.usageAccess) return 1;
+  if (!perms.overlay) return 2;
+  if (!perms.accessibility) return 3;
+  return 4;
 };
 
 const DEMO_INSTALLED: InstalledApp[] = [
@@ -202,7 +222,7 @@ const OnboardingView = ({
   onboardingStep: number, 
   setOnboardingStep: React.Dispatch<React.SetStateAction<number>>, 
   setStep: React.Dispatch<React.SetStateAction<AppState>>,
-  perms: { usageAccess: boolean; overlay: boolean },
+  perms: PermissionsState,
   refreshPerms: () => void
 }) => {
   const steps = [
@@ -213,7 +233,8 @@ const OnboardingView = ({
       icon: <BarChart3 className="text-emerald-400 drop-shadow-[0_0_15px_rgba(52,211,153,0.8)]" size={48} />, 
       permission: perms.usageAccess ? 'Usage Access Granted' : 'Enable Usage Access', 
       isGranted: perms.usageAccess,
-      action: () => window.Android?.requestUsageAccess() 
+      action: () => window.Android?.requestUsageAccess(),
+      requiresGrant: true
     },
     { 
       title: 'Ironclad Lock', 
@@ -221,34 +242,45 @@ const OnboardingView = ({
       icon: <ShieldCheck className="text-blue-400 drop-shadow-[0_0_15px_rgba(96,165,250,0.8)]" size={48} />, 
       permission: perms.overlay ? 'Overlay Granted' : 'Enable Lock Screen', 
       isGranted: perms.overlay,
-      action: () => window.Android?.requestOverlay() 
+      action: () => window.Android?.requestOverlay(),
+      requiresGrant: true
     },
-    { title: 'Unstoppable Mode', description: 'To prevent any bypass, FocusFine runs persistently. This is your commitment to staying focused.', icon: <Zap className="text-amber-400 drop-shadow-[0_0_15px_rgba(251,191,36,0.8)]" size={48} />, permission: 'Enable Unstoppable Mode', action: () => window.Android?.requestBatteryOptimization() },
+    {
+      title: 'App Switch Guard',
+      description: 'Enable the Accessibility service so FocusFine can instantly intercept selected apps the moment you open them after the limit is hit.',
+      icon: <ShieldCheck className="text-rose-400 drop-shadow-[0_0_15px_rgba(251,113,133,0.8)]" size={48} />,
+      permission: perms.accessibility ? 'Accessibility Granted' : 'Enable App Blocking',
+      isGranted: perms.accessibility,
+      action: () => window.Android?.requestAccessibilityService(),
+      requiresGrant: true
+    },
+    { title: 'Unstoppable Mode', description: 'To prevent any bypass, FocusFine runs persistently. This is your commitment to staying focused.', icon: <Zap className="text-amber-400 drop-shadow-[0_0_15px_rgba(251,191,36,0.8)]" size={48} />, permission: 'Enable Unstoppable Mode', action: () => window.Android?.requestBatteryOptimization(), requiresGrant: false },
   ];
   
   const current = steps[onboardingStep];
   const isLast = onboardingStep === steps.length - 1;
-  const showRestrictedHelp = onboardingStep === 1 || onboardingStep === 2;
+  const showRestrictedHelp = Boolean(current.requiresGrant && !current.isGranted);
 
   // Auto-advance if already granted
   useEffect(() => {
-    if (onboardingStep > 0 && onboardingStep < 3 && current.isGranted) {
+    if (onboardingStep > 0 && current.requiresGrant && current.isGranted) {
       setTimeout(() => setOnboardingStep(s => s + 1), 600);
     }
-  }, [perms, onboardingStep, current.isGranted]);
+  }, [perms, onboardingStep, current.isGranted, current.requiresGrant, setOnboardingStep]);
 
   const handleNextTap = () => {
     if (onboardingStep === 0) {
       setOnboardingStep(1);
-    } else if (isLast) {
-      setStep('setup');
-    } else if (current.isGranted) {
-      setOnboardingStep(s => s + 1);
-    } else {
+    } else if (current.requiresGrant && !current.isGranted) {
       current.action?.();
       // Start a polling check for 5 seconds to catch the permission grant
       const interval = setInterval(refreshPerms, 1000);
       setTimeout(() => clearInterval(interval), 5000);
+    } else if (isLast) {
+      current.action?.();
+      setStep('setup');
+    } else {
+      setOnboardingStep(s => s + 1);
     }
   };
 
@@ -275,7 +307,7 @@ const OnboardingView = ({
         <div className="flex flex-col gap-4 w-full">
           <button 
             onClick={handleNextTap}
-            disabled={onboardingStep > 0 && onboardingStep < 3 && current.isGranted}
+            disabled={Boolean(current.requiresGrant && current.isGranted)}
             className={`w-full py-6 rounded-[2rem] font-black text-lg font-outfit uppercase tracking-widest transition-all shadow-xl hover:scale-[1.02] active:scale-[0.98] ${onboardingStep === 0 ? 'bg-white text-black' : (current.isGranted ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-white text-black shadow-white/10')}`}
           >
             {onboardingStep === 0 ? 'Begin Setup' : current.permission || 'Next'}
@@ -527,7 +559,7 @@ export default function App() {
   const [onboardingStep, setOnboardingStep] = useState(0);
 
   // Permissions state
-  const [perms, setPerms] = useState({ usageAccess: false, overlay: false });
+  const [perms, setPerms] = useState<PermissionsState>(DEFAULT_PERMS);
 
   // Setup screen state
   const [installedApps, setInstalledApps] = useState<InstalledApp[]>([]);
@@ -542,7 +574,11 @@ export default function App() {
     if (window.Android) {
       try {
         const p = JSON.parse(window.Android.isPermissionsGranted());
-        setPerms({ usageAccess: p.usageAccess, overlay: p.overlay });
+        setPerms({
+          usageAccess: Boolean(p.usageAccess),
+          overlay: Boolean(p.overlay),
+          accessibility: Boolean(p.accessibility),
+        });
         return p;
       } catch (e) {
         return null;
@@ -554,10 +590,24 @@ export default function App() {
   useEffect(() => {
     const p = refreshPerms();
     if (p) {
-      if (p.onboardingComplete) {
+      const latestPerms: PermissionsState = {
+        usageAccess: Boolean(p.usageAccess),
+        overlay: Boolean(p.overlay),
+        accessibility: Boolean(p.accessibility),
+      };
+      const hasCorePermissions =
+        latestPerms.usageAccess &&
+        latestPerms.overlay &&
+        latestPerms.accessibility;
+
+      if (p.onboardingComplete && hasCorePermissions) {
         const apps = JSON.parse(window.Android!.getMonitoredApps());
         setStep(apps.length > 0 ? 'dashboard' : 'setup');
       } else {
+        if (p.onboardingComplete && window.Android) {
+          window.Android.setOnboardingComplete(false);
+        }
+        setOnboardingStep(getFirstIncompleteOnboardingStep(latestPerms));
         setStep('onboarding');
       }
     } else {
@@ -633,6 +683,22 @@ export default function App() {
   const finishSetup = () => {
     const selected = installedApps.filter(a => a.isSelected);
     if (window.Android) {
+      const latest = refreshPerms();
+      if (latest) {
+        const latestPerms: PermissionsState = {
+          usageAccess: Boolean(latest.usageAccess),
+          overlay: Boolean(latest.overlay),
+          accessibility: Boolean(latest.accessibility),
+        };
+
+        if (!latestPerms.usageAccess || !latestPerms.overlay || !latestPerms.accessibility) {
+          window.Android.setOnboardingComplete(false);
+          setOnboardingStep(getFirstIncompleteOnboardingStep(latestPerms));
+          setStep('onboarding');
+          return;
+        }
+      }
+
       selected.forEach(app => window.Android!.saveApp(app.packageName, app.limitMinutes, app.appName));
       window.Android.setOnboardingComplete(true);
     }

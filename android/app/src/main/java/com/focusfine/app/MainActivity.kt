@@ -56,10 +56,21 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun checkPermissionsAndProceed() {
-        if (FocusFineApp.preferences.isOnboardingComplete) {
+        val onboardingComplete = FocusFineApp.preferences.isOnboardingComplete
+        val hasCorePermissions =
+            hasUsageAccessPermission() &&
+            hasOverlayPermissionGranted() &&
+            hasAccessibilityServiceEnabled()
+
+        if (onboardingComplete && hasCorePermissions) {
             startMonitoringServiceIfNeeded()
             return
         }
+
+        if (onboardingComplete && !hasCorePermissions) {
+            FocusFineApp.preferences.isOnboardingComplete = false
+        }
+
         when {
             !hasUsageAccessPermission() -> requestUsageAccessPermission()
             !hasOverlayPermissionGranted() -> requestOverlayPermission()
