@@ -19,18 +19,31 @@ import android.view.WindowManager
 import android.graphics.PixelFormat
 import android.widget.Button
 import android.widget.TextView
+import com.focusfine.app.db.BlockReason
 import com.focusfine.app.db.AppUsage
+import com.focusfine.app.db.UnlockScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
 import java.util.Calendar
+import java.util.Date
+import java.util.Locale
 
 class UsageMonitorService : Service() {
+    private data class FloatingLockTarget(
+        val packageName: String,
+        val appName: String,
+        val reason: BlockReason,
+        val blockEndsAt: Long?
+    )
 
     private val handler = Handler(Looper.getMainLooper())
     // SupervisorJob: a failed child coroutine does NOT cancel the scope or crash the process.
     private val coroutineScope = CoroutineScope(SupervisorJob() + Dispatchers.Default)
+    private val decisionEngine by lazy { BlockingDecisionEngine(FocusFineApp.database) }
+    private val timeFormatter = SimpleDateFormat("hh:mm a", Locale.getDefault())
 
     // Thread-safe set — multiple 1-second coroutines run concurrently and all touch this set.
     // A plain mutableSetOf() is a LinkedHashSet which is not thread-safe.
@@ -39,7 +52,6 @@ class UsageMonitorService : Service() {
 
     // Used to detect day changes and reset the "warned" flag in UserSettings
     private var lastTodayStart = 0L
-    private var isAnyAppLockedRightNow = false
     
     // The invincible floating lock view
     private var floatingLockView: View? = null
@@ -48,9 +60,6 @@ class UsageMonitorService : Service() {
     private var cachedSessionApp: String? = null
     private var cachedSessionStart: Long = 0L
     private var lastEventTimeProcessed: Long = 0L
-
-    // Throttle: don't launch OverlayActivity more than once every 3 seconds from the service
-    private var lastOverlayLaunchTime: Long = 0L
 
     private val monitorRunnable = object : Runnable {
         override fun run() {
@@ -66,6 +75,8 @@ class UsageMonitorService : Service() {
         } else {
             startForeground(NOTIFICATION_ID, buildServiceNotification())
         }
+        FocusFineApp.preferences.isMonitoringServiceRunning = true
+        FocusFineApp.preferences.lastServiceCheckTime = System.currentTimeMillis()
         // Clear any existing callbacks before posting — prevents duplicate loops on re-start
         handler.removeCallbacks(monitorRunnable)
         handler.post(monitorRunnable)
@@ -75,8 +86,9 @@ class UsageMonitorService : Service() {
 
     private fun checkUsage() {
         try {
+            val tickStartedAt = System.currentTimeMillis()
             val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
-            val now = System.currentTimeMillis()
+            val now = tickStartedAt
             val todayStart = getTodayStartMillis()
 
             // 1. Live Session Tracker: Process only the NEW events since the last 1-second tick!
@@ -128,8 +140,8 @@ class UsageMonitorService : Service() {
 
                 val db = FocusFineApp.database
                 val enabledApps = db.userSettingsDao().getAllSettings().filter { it.isEnabled }
-                var isAnyAppLockedRightNow = false
-                var shouldShowFloatingLockFor: Pair<String, String>? = null
+                var anyAppLockedNow = false
+                var shouldShowFloatingLockFor: FloatingLockTarget? = null
 
                 for (settings in enabledApps) {
                     val pkg = settings.packageName
@@ -161,85 +173,118 @@ class UsageMonitorService : Service() {
                         db.appUsageDao().insert(AppUsage(packageName = pkg, date = todayStart, totalTimeMinutes = usedMinutes))
                     }
 
-                    val limitMinutes = settings.dailyLimitMinutes.toLong()
-
                     // Reset baseline at midnight
-                    val effectiveBaseUsage = if (todayStart > settings.lastResetDate) {
-                        db.userSettingsDao().update(settings.copy(baseUsageMinutes = 0, lastResetDate = todayStart))
-                        0L
+                    val activeSettings = if (todayStart > settings.lastResetDate) {
+                        val updated = settings.copy(baseUsageMinutes = 0, lastResetDate = todayStart)
+                        db.userSettingsDao().update(updated)
+                        updated
                     } else {
-                        settings.baseUsageMinutes
+                        settings
                     }
 
-                    val effectiveUsage = (usedMinutes - effectiveBaseUsage).coerceAtLeast(0L)
+                    val evaluation = decisionEngine.evaluate(
+                        packageName = pkg,
+                        now = now,
+                        todayStartMillis = todayStart,
+                        rawUsageMinutesToday = usedMinutes
+                    )
 
                     // ── 80% warning notification ─────────────────────────────
-                    if (effectiveUsage >= limitMinutes * 80 / 100 && !settings.isNotified) {
-                        val remaining = limitMinutes - effectiveUsage
-                        sendWarningNotification(pkg, settings.appName, remaining)
+                    if (
+                        evaluation.usageRuleEnabled &&
+                        evaluation.usageLimitMinutes > 0 &&
+                        evaluation.effectiveUsageMinutes >= (evaluation.usageLimitMinutes * 80 / 100) &&
+                        !activeSettings.isNotified
+                    ) {
+                        val remaining = (evaluation.usageLimitMinutes - evaluation.effectiveUsageMinutes)
+                            .coerceAtLeast(0L)
+                        sendWarningNotification(pkg, activeSettings.appName, remaining)
                         db.userSettingsDao().markAsNotified(pkg)
                     }
 
                     // ── Lock logic ────────────────────────────────────────────
-                    if (effectiveUsage >= limitMinutes) {
-                        val activeUnlocks = db.paymentDao().getActiveUnlocks(pkg, now)
-                        if (activeUnlocks.isEmpty()) {
-                            isAnyAppLockedRightNow = true
+                    val decision = evaluation.decision
+                    if (decision != null) {
+                        anyAppLockedNow = true
 
-                            // Publish to shared set so AccessibilityService can redirect instantly
-                            FocusFineApp.lockedPackages.add(pkg)
-                            FocusFineApp.lockedPackageNames[pkg] = settings.appName
+                        // Publish to shared set so AccessibilityService can redirect instantly
+                        FocusFineApp.lockedPackages.add(pkg)
+                        FocusFineApp.lockedPackageNames[pkg] = decision.appName
 
-                            // Show Toast ONLY ONCE when the limit is first breached
-                            if (!lockedAppsThisSession.contains(pkg)) {
-                                lockedAppsThisSession.add(pkg)
-                                handler.post {
-                                    android.widget.Toast.makeText(applicationContext, "${settings.appName}: Limit exceeded", android.widget.Toast.LENGTH_SHORT).show()
-                                }
+                        // Show Toast ONLY ONCE when this app transitions into blocked state
+                        if (!lockedAppsThisSession.contains(pkg)) {
+                            lockedAppsThisSession.add(pkg)
+                            val toastText = when (decision.reason) {
+                                BlockReason.TIME_BLOCK -> "${decision.appName}: Blocked by schedule"
+                                BlockReason.USAGE_LIMIT -> "${decision.appName}: Daily limit exceeded"
                             }
-
-                            // Mark this app for the invincible floating blackout
-                            if (currentApp == pkg) {
-                                shouldShowFloatingLockFor = Pair(pkg, settings.appName)
-                                FocusFineAccessibilityService.forceBlockPackage(
-                                    pkg,
-                                    settings.appName.ifEmpty { pkg },
-                                    FocusFineApp.preferences.isStrictModeEnabled
-                                )
+                            handler.post {
+                                android.widget.Toast.makeText(
+                                    applicationContext,
+                                    toastText,
+                                    android.widget.Toast.LENGTH_SHORT
+                                ).show()
                             }
-                        } else {
-                            // Paid unlock is active
-                            lockedAppsThisSession.remove(pkg)
-                            FocusFineApp.lockedPackages.remove(pkg)
-                            FocusFineApp.lockedPackageNames.remove(pkg)
+                        }
+
+                        // Mark this app for the invincible floating blackout
+                        if (currentApp == pkg) {
+                            shouldShowFloatingLockFor = FloatingLockTarget(
+                                packageName = pkg,
+                                appName = decision.appName,
+                                reason = decision.reason,
+                                blockEndsAt = decision.blockEndsAt
+                            )
+                            FocusFineAccessibilityService.forceBlockPackage(
+                                packageName = pkg,
+                                appName = decision.appName.ifEmpty { pkg },
+                                strictMode = decision.strictMode,
+                                reason = decision.reason,
+                                blockEndsAt = decision.blockEndsAt,
+                                unlockScope = decision.unlockScope
+                            )
                         }
                     } else {
-                        // Under limit
+                        // Not currently blocked
                         lockedAppsThisSession.remove(pkg)
                         FocusFineApp.lockedPackages.remove(pkg)
                         FocusFineApp.lockedPackageNames.remove(pkg)
                     }
                 }
 
-                // Uninstall prevention block (for settings and installer)
+                // Uninstall prevention block (for settings and installer only).
+                // Do NOT block Play Store globally: users should still be able to
+                // update apps and manage subscriptions unless Play Store itself is monitored.
                 val systemAppsToCheck = listOf(
                     "com.android.settings", 
                     "com.google.android.packageinstaller",
-                    "com.miui.securitycenter",
-                    "com.android.vending"
+                    "com.miui.securitycenter"
                 )
                 
-                if (isAnyAppLockedRightNow && currentApp != null && systemAppsToCheck.contains(currentApp)) {
-                    shouldShowFloatingLockFor = Pair(currentApp, "System Blocked")
+                if (anyAppLockedNow && currentApp != null && systemAppsToCheck.contains(currentApp)) {
+                    shouldShowFloatingLockFor = FloatingLockTarget(
+                        packageName = currentApp,
+                        appName = "System Blocked",
+                        reason = BlockReason.USAGE_LIMIT,
+                        blockEndsAt = null
+                    )
                 }
 
                 // Apply the floating lock state safely on the Main Thread
                 handler.post {
                     if (shouldShowFloatingLockFor != null) {
-                        showFloatingLock(shouldShowFloatingLockFor!!.first, shouldShowFloatingLockFor!!.second)
+                        showFloatingLock(shouldShowFloatingLockFor!!)
                     } else {
                         removeFloatingLock()
                     }
+                }
+
+                val elapsed = System.currentTimeMillis() - tickStartedAt
+                if (elapsed > 120L) {
+                    Log.w(
+                        TAG,
+                        "Monitor tick slow: ${elapsed}ms apps=${enabledApps.size} current=$currentApp"
+                    )
                 }
               } catch (e: Exception) {
                 // Catch all errors inside the coroutine so they never escape to crash the process.
@@ -260,11 +305,22 @@ class UsageMonitorService : Service() {
         Log.d(TAG, "Daily warning flags reset")
     }
 
-    private fun showFloatingLock(packageName: String, appName: String) {
+    private fun showFloatingLock(target: FloatingLockTarget) {
+        val message = when (target.reason) {
+            BlockReason.TIME_BLOCK -> {
+                if (target.blockEndsAt != null && target.blockEndsAt > 0L) {
+                    "Blocked by schedule for ${target.appName} until ${timeFormatter.format(Date(target.blockEndsAt))}"
+                } else {
+                    "Blocked by schedule for ${target.appName}"
+                }
+            }
+            BlockReason.USAGE_LIMIT -> "Daily limit reached for ${target.appName}"
+        }
+
         if (floatingLockView != null) {
             // Update the text dynamically if already showing
             try {
-                floatingLockView?.findViewById<TextView>(R.id.overlay_lock_message)?.text = "Daily limit reached for $appName"
+                floatingLockView?.findViewById<TextView>(R.id.overlay_lock_message)?.text = message
             } catch (e: Exception) {}
             return
         }
@@ -285,7 +341,7 @@ class UsageMonitorService : Service() {
             )
             
             val view = LayoutInflater.from(this).inflate(R.layout.window_lock_overlay, null)
-            view.findViewById<TextView>(R.id.overlay_lock_message).text = "Daily limit reached for $appName"
+            view.findViewById<TextView>(R.id.overlay_lock_message).text = message
             
             val strictMode = FocusFineApp.preferences.isStrictModeEnabled
             if (strictMode) {
@@ -297,9 +353,12 @@ class UsageMonitorService : Service() {
                     // This grants us immediate permission to launch our Payment Activity from the background!
                     val intent = Intent(this@UsageMonitorService, OverlayActivity::class.java).apply {
                         addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
-                        putExtra("LOCKED_PACKAGE", packageName)
-                        putExtra("APP_NAME", appName)
+                        putExtra("LOCKED_PACKAGE", target.packageName)
+                        putExtra("APP_NAME", target.appName)
                         putExtra("STRICT_MODE", false)
+                        putExtra("BLOCK_REASON", target.reason.name)
+                        putExtra("BLOCK_ENDS_AT", target.blockEndsAt ?: -1L)
+                        putExtra("UNLOCK_SCOPE", UnlockScope.REASON_ONLY.name)
                     }
                     startActivity(intent)
                 }
@@ -307,7 +366,10 @@ class UsageMonitorService : Service() {
             
             windowManager.addView(view, params)
             floatingLockView = view
-            Log.d(TAG, "Invincible WindowManager lock deployed over $appName ($packageName)")
+            Log.d(
+                TAG,
+                "Invincible WindowManager lock deployed over ${target.appName} (${target.packageName}) reason=${target.reason}"
+            )
         } catch (e: Exception) {
             Log.e(TAG, "Failed to deploy WindowManager overlay! Missing permission?", e)
         }
@@ -376,9 +438,40 @@ class UsageMonitorService : Service() {
         }.timeInMillis
     }
 
+    override fun onTaskRemoved(rootIntent: Intent?) {
+        Log.w(TAG, "App task removed; requesting monitor service restart")
+        val restartIntent = Intent(applicationContext, UsageMonitorService::class.java)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(restartIntent)
+            } else {
+                startService(restartIntent)
+            }
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to restart monitor service after task removal", e)
+        }
+        super.onTaskRemoved(rootIntent)
+    }
+
     override fun onDestroy() {
         super.onDestroy()
         handler.removeCallbacks(monitorRunnable)
+        removeFloatingLock()
+        FocusFineApp.preferences.isMonitoringServiceRunning = false
+        FocusFineApp.preferences.lastServiceCheckTime = System.currentTimeMillis()
+        if (FocusFineApp.preferences.isOnboardingComplete) {
+            try {
+                val restartIntent = Intent(applicationContext, UsageMonitorService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    startForegroundService(restartIntent)
+                } else {
+                    startService(restartIntent)
+                }
+                Log.w(TAG, "Service destroyed unexpectedly; restart requested")
+            } catch (e: Exception) {
+                Log.e(TAG, "Failed to self-heal after service destroy", e)
+            }
+        }
         Log.d(TAG, "Service destroyed")
     }
 

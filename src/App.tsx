@@ -22,13 +22,17 @@ declare global {
     Android?: {
       isPermissionsGranted: () => string;
       getMonitoredApps: () => string;
+      getAppPolicies?: () => string;
       getInstalledApps: () => string;
       getAppIcon: (pkg: string) => string;
       saveApp: (pkg: string, limit: number, name: string) => void;
+      saveAppPolicy?: (policyJson: string) => boolean;
+      setTimeBlockRules?: (pkg: string, rulesJson: string) => boolean;
       removeApp: (pkg: string) => void;
       getTodayUsage: () => string;
       getDashboardStats: () => string;
       getWeeklyStats: () => string;
+      getCurrentBlockState?: (pkg: string) => string;
       setStrictMode: (enabled: boolean) => void;
       requestUsageAccess: () => void;
       requestOverlay: () => void;
@@ -40,6 +44,7 @@ declare global {
 }
 
 type AppState = 'loading' | 'onboarding' | 'setup' | 'dashboard';
+type PolicyMode = 'USAGE_ONLY' | 'TIME_ONLY' | 'COMBINED';
 
 type PermissionsState = {
   usageAccess: boolean;
@@ -47,11 +52,22 @@ type PermissionsState = {
   accessibility: boolean;
 };
 
+interface TimeRule {
+  dayOfWeek: number;
+  startMinuteOfDay: number;
+  endMinuteOfDay: number;
+  isEnabled: boolean;
+}
+
 interface InstalledApp {
   packageName: string;
   appName: string;
   limitMinutes: number;
   isSelected: boolean;
+  enforcementMode: PolicyMode;
+  usageLimitEnabled: boolean;
+  timeBlockEnabled: boolean;
+  timeRules: TimeRule[];
 }
 
 interface MonitoredApp {
@@ -59,6 +75,10 @@ interface MonitoredApp {
   appName: string;
   dailyLimitMinutes: number;
   usedMinutes: number;
+  enforcementMode: PolicyMode;
+  usageLimitEnabled: boolean;
+  timeBlockEnabled: boolean;
+  timeRules: TimeRule[];
 }
 
 interface DashboardStats {
@@ -102,10 +122,56 @@ const getFirstIncompleteOnboardingStep = (perms: PermissionsState) => {
 };
 
 const DEMO_INSTALLED: InstalledApp[] = [
-  { packageName: 'com.android.chrome', appName: 'Chrome', limitMinutes: 30, isSelected: false },
-  { packageName: 'com.instagram.android', appName: 'Instagram', limitMinutes: 45, isSelected: false },
-  { packageName: 'com.zhiliaoapp.musically', appName: 'TikTok', limitMinutes: 60, isSelected: false },
+  {
+    packageName: 'com.android.chrome',
+    appName: 'Chrome',
+    limitMinutes: 30,
+    isSelected: false,
+    enforcementMode: 'COMBINED',
+    usageLimitEnabled: true,
+    timeBlockEnabled: true,
+    timeRules: [{ dayOfWeek: 1, startMinuteOfDay: 21 * 60, endMinuteOfDay: 9 * 60, isEnabled: true }],
+  },
+  {
+    packageName: 'com.instagram.android',
+    appName: 'Instagram',
+    limitMinutes: 45,
+    isSelected: false,
+    enforcementMode: 'COMBINED',
+    usageLimitEnabled: true,
+    timeBlockEnabled: true,
+    timeRules: [{ dayOfWeek: 1, startMinuteOfDay: 21 * 60, endMinuteOfDay: 9 * 60, isEnabled: true }],
+  },
+  {
+    packageName: 'com.zhiliaoapp.musically',
+    appName: 'TikTok',
+    limitMinutes: 60,
+    isSelected: false,
+    enforcementMode: 'COMBINED',
+    usageLimitEnabled: true,
+    timeBlockEnabled: true,
+    timeRules: [{ dayOfWeek: 1, startMinuteOfDay: 21 * 60, endMinuteOfDay: 9 * 60, isEnabled: true }],
+  },
 ];
+
+const DEFAULT_WEEKLY_RULES: TimeRule[] = [1, 2, 3, 4, 5, 6, 7].map(day => ({
+  dayOfWeek: day,
+  startMinuteOfDay: 21 * 60,
+  endMinuteOfDay: 9 * 60,
+  isEnabled: true,
+}));
+
+const toTimeInput = (minutes: number) => {
+  const h = Math.floor(minutes / 60).toString().padStart(2, '0');
+  const m = (minutes % 60).toString().padStart(2, '0');
+  return `${h}:${m}`;
+};
+
+const fromTimeInput = (value: string) => {
+  const [h, m] = value.split(':').map(v => parseInt(v, 10));
+  if (Number.isNaN(h) || Number.isNaN(m)) return 0;
+  return Math.max(0, Math.min(23 * 60 + 59, h * 60 + m));
+};
 
 // ── Components ────────────────────────────────────────────────────────────────
 
@@ -355,12 +421,16 @@ const SetupView = ({
   loadingApps, 
   toggleApp, 
   updateLimit, 
+  updateMode,
+  updateTimeWindow,
   finishSetup 
 }: { 
   installedApps: InstalledApp[], 
   loadingApps: boolean, 
   toggleApp: (pkg: string) => void, 
   updateLimit: (pkg: string, minutes: number) => void, 
+  updateMode: (pkg: string, mode: PolicyMode) => void,
+  updateTimeWindow: (pkg: string, startMinuteOfDay: number, endMinuteOfDay: number) => void,
   finishSetup: () => void 
 }) => {
   const selectedCount = installedApps.filter(a => a.isSelected).length;
@@ -388,14 +458,58 @@ const SetupView = ({
                 <div>
                   <h3 className="font-semibold text-white text-lg font-outfit">{app.appName}</h3>
                   {app.isSelected && (
-                    <div className="flex items-center gap-2 mt-1" onClick={e => e.stopPropagation()}>
-                      <Clock size={14} className="text-emerald-400" />
-                      <input type="number" value={app.limitMinutes} min={1} max={720}
-                        aria-label={`Daily limit for ${app.appName} in minutes`}
-                        title={`Set daily limit for ${app.appName}`}
-                        onChange={e => updateLimit(app.packageName, parseInt(e.target.value) || 1)}
-                        className="w-12 bg-transparent border-b border-zinc-600 focus:border-emerald-400 outline-none text-sm font-medium text-white p-0 text-center shadow-none" />
-                      <span className="text-xs text-zinc-500 uppercase font-bold tracking-wider">min / day</span>
+                    <div className="mt-2 flex flex-col gap-2" onClick={e => e.stopPropagation()}>
+                      <div className="flex items-center gap-2">
+                        <Clock size={14} className="text-emerald-400" />
+                        <input type="number" value={app.limitMinutes} min={1} max={720}
+                          aria-label={`Daily limit for ${app.appName} in minutes`}
+                          title={`Set daily limit for ${app.appName}`}
+                          disabled={app.enforcementMode === 'TIME_ONLY'}
+                          onChange={e => updateLimit(app.packageName, parseInt(e.target.value) || 1)}
+                          className="w-14 bg-transparent border-b border-zinc-600 focus:border-emerald-400 outline-none text-sm font-medium text-white p-0 text-center shadow-none disabled:opacity-40" />
+                        <span className="text-xs text-zinc-500 uppercase font-bold tracking-wider">min / day</span>
+                      </div>
+                      <div className="flex items-center gap-2">
+                        <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Mode</span>
+                        <select
+                          value={app.enforcementMode}
+                          onChange={e => updateMode(app.packageName, e.target.value as PolicyMode)}
+                          className="bg-zinc-900 border border-zinc-700 rounded-xl px-2 py-1 text-xs text-white"
+                          aria-label={`Enforcement mode for ${app.appName}`}
+                        >
+                          <option value="USAGE_ONLY">Usage only</option>
+                          <option value="TIME_ONLY">Time block</option>
+                          <option value="COMBINED">Combined</option>
+                        </select>
+                      </div>
+                      {app.enforcementMode !== 'USAGE_ONLY' && (
+                        <div className="flex items-center gap-2">
+                          <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Block</span>
+                          <input
+                            type="time"
+                            value={toTimeInput(app.timeRules[0]?.startMinuteOfDay ?? 21 * 60)}
+                            onChange={e => updateTimeWindow(
+                              app.packageName,
+                              fromTimeInput(e.target.value),
+                              app.timeRules[0]?.endMinuteOfDay ?? 9 * 60
+                            )}
+                            className="bg-zinc-900 border border-zinc-700 rounded-xl px-2 py-1 text-xs text-white"
+                            aria-label={`Block start time for ${app.appName}`}
+                          />
+                          <span className="text-zinc-500 text-xs">to</span>
+                          <input
+                            type="time"
+                            value={toTimeInput(app.timeRules[0]?.endMinuteOfDay ?? 9 * 60)}
+                            onChange={e => updateTimeWindow(
+                              app.packageName,
+                              app.timeRules[0]?.startMinuteOfDay ?? 21 * 60,
+                              fromTimeInput(e.target.value)
+                            )}
+                            className="bg-zinc-900 border border-zinc-700 rounded-xl px-2 py-1 text-xs text-white"
+                            aria-label={`Block end time for ${app.appName}`}
+                          />
+                        </div>
+                      )}
                     </div>
                   )}
                 </div>
@@ -433,6 +547,11 @@ const DashboardView = ({
 }) => {
   const scoreSign = stats.scoreDiffVsYesterday >= 0 ? '+' : '';
   const timeSavedHrs = (stats.timeSavedMinutes / 60).toFixed(1);
+  const modeLabel = (mode: PolicyMode) => {
+    if (mode === 'COMBINED') return 'Combined';
+    if (mode === 'TIME_ONLY') return 'Time block';
+    return 'Usage only';
+  };
 
   return (
     <div className="max-w-2xl mx-auto px-6 py-12 pb-32 relative">
@@ -505,6 +624,10 @@ const DashboardView = ({
                           {app.usedMinutes} / {app.dailyLimitMinutes} min
                           {isOver && ' · BREACHED'}
                         </p>
+                        <p className="text-[10px] text-zinc-500 mt-1 uppercase tracking-wider font-semibold">
+                          {modeLabel(app.enforcementMode)}
+                          {app.timeBlockEnabled ? ' · time window active' : ''}
+                        </p>
                       </div>
                     </div>
                     <button onClick={() => {
@@ -545,8 +668,8 @@ const DashboardView = ({
         <h2 className="text-xl font-bold mb-6 flex items-center gap-3 text-white font-outfit">
           <BarChart3 size={20} className="text-zinc-500" /> Executive summary
         </h2>
-        <streakCard days={stats.streakDays} />
-        <weeklyTrend data={weeklyData} />
+        <StreakCard days={stats.streakDays} />
+        <WeeklyTrend data={weeklyData} />
       </div>
     </div>
   );
@@ -628,14 +751,29 @@ export default function App() {
       try {
         const installed: { packageName: string; appName: string }[] =
           JSON.parse(window.Android.getInstalledApps());
-        const monitored: { packageName: string; dailyLimitMinutes: number }[] =
-          JSON.parse(window.Android.getMonitoredApps());
-        const monitoredMap = new Map(monitored.map(m => [m.packageName, m.dailyLimitMinutes]));
+        const policies: Array<{
+          packageName: string;
+          appName: string;
+          dailyLimitMinutes: number;
+          enforcementMode?: PolicyMode;
+          usageLimitEnabled?: boolean;
+          timeBlockEnabled?: boolean;
+          timeRules?: TimeRule[];
+        }> = window.Android.getAppPolicies
+          ? JSON.parse(window.Android.getAppPolicies())
+          : JSON.parse(window.Android.getMonitoredApps());
+        const policyMap = new Map(policies.map(p => [p.packageName, p]));
 
         setInstalledApps(installed.map(app => ({
           ...app,
-          limitMinutes: monitoredMap.get(app.packageName) ?? 30,
-          isSelected: monitoredMap.has(app.packageName),
+          limitMinutes: policyMap.get(app.packageName)?.dailyLimitMinutes ?? 30,
+          isSelected: policyMap.has(app.packageName),
+          enforcementMode: policyMap.get(app.packageName)?.enforcementMode ?? 'COMBINED',
+          usageLimitEnabled: policyMap.get(app.packageName)?.usageLimitEnabled ?? true,
+          timeBlockEnabled: policyMap.get(app.packageName)?.timeBlockEnabled ?? true,
+          timeRules: policyMap.get(app.packageName)?.timeRules?.length
+            ? policyMap.get(app.packageName)!.timeRules!
+            : DEFAULT_WEEKLY_RULES,
         })));
       } catch (e) {
         setInstalledApps(DEMO_INSTALLED);
@@ -651,8 +789,17 @@ export default function App() {
       try {
         const usageArr: { packageName: string; usedMinutes: number; limitMinutes: number }[] =
           JSON.parse(window.Android.getTodayUsage());
-        const monitoredArr: { packageName: string; appName: string; dailyLimitMinutes: number }[] =
-          JSON.parse(window.Android.getMonitoredApps());
+        const monitoredArr: Array<{
+          packageName: string;
+          appName: string;
+          dailyLimitMinutes: number;
+          enforcementMode?: PolicyMode;
+          usageLimitEnabled?: boolean;
+          timeBlockEnabled?: boolean;
+          timeRules?: TimeRule[];
+        }> = window.Android.getAppPolicies
+          ? JSON.parse(window.Android.getAppPolicies())
+          : JSON.parse(window.Android.getMonitoredApps());
         const usageMap = new Map(usageArr.map(u => [u.packageName, u.usedMinutes]));
 
         setMonitoredApps(monitoredArr.map(app => ({
@@ -660,6 +807,10 @@ export default function App() {
           appName: app.appName,
           dailyLimitMinutes: app.dailyLimitMinutes,
           usedMinutes: usageMap.get(app.packageName) ?? 0,
+          enforcementMode: app.enforcementMode ?? 'USAGE_ONLY',
+          usageLimitEnabled: app.usageLimitEnabled ?? true,
+          timeBlockEnabled: app.timeBlockEnabled ?? false,
+          timeRules: app.timeRules ?? [],
         })));
 
         const s: DashboardStats = JSON.parse(window.Android.getDashboardStats());
@@ -680,6 +831,29 @@ export default function App() {
   const updateLimit = (pkg: string, minutes: number) =>
     setInstalledApps(prev => prev.map(a => a.packageName === pkg ? { ...a, limitMinutes: minutes } : a));
 
+  const updateMode = (pkg: string, mode: PolicyMode) =>
+    setInstalledApps(prev => prev.map(a => {
+      if (a.packageName !== pkg) return a;
+      return {
+        ...a,
+        enforcementMode: mode,
+        usageLimitEnabled: mode !== 'TIME_ONLY',
+        timeBlockEnabled: mode !== 'USAGE_ONLY',
+        timeRules: mode === 'USAGE_ONLY' ? [] : (a.timeRules.length ? a.timeRules : DEFAULT_WEEKLY_RULES),
+      };
+    }));
+
+  const updateTimeWindow = (pkg: string, startMinuteOfDay: number, endMinuteOfDay: number) =>
+    setInstalledApps(prev => prev.map(a => {
+      if (a.packageName !== pkg) return a;
+      const rules = DEFAULT_WEEKLY_RULES.map(rule => ({
+        ...rule,
+        startMinuteOfDay,
+        endMinuteOfDay,
+      }));
+      return { ...a, timeRules: rules };
+    }));
+
   const finishSetup = () => {
     const selected = installedApps.filter(a => a.isSelected);
     if (window.Android) {
@@ -699,7 +873,26 @@ export default function App() {
         }
       }
 
-      selected.forEach(app => window.Android!.saveApp(app.packageName, app.limitMinutes, app.appName));
+      selected.forEach(app => {
+        if (window.Android?.saveAppPolicy) {
+          const policy = {
+            packageName: app.packageName,
+            appName: app.appName,
+            dailyLimitMinutes: app.limitMinutes,
+            isEnabled: true,
+            enforcementMode: app.enforcementMode,
+            usageLimitEnabled: app.enforcementMode !== 'TIME_ONLY',
+            timeBlockEnabled: app.enforcementMode !== 'USAGE_ONLY',
+            timeRules: app.enforcementMode === 'USAGE_ONLY' ? [] : (app.timeRules.length ? app.timeRules : DEFAULT_WEEKLY_RULES),
+          };
+          window.Android.saveAppPolicy(JSON.stringify(policy));
+        } else {
+          window.Android!.saveApp(app.packageName, app.limitMinutes, app.appName);
+          if (window.Android?.setTimeBlockRules && app.enforcementMode !== 'USAGE_ONLY') {
+            window.Android.setTimeBlockRules(app.packageName, JSON.stringify(app.timeRules));
+          }
+        }
+      });
       window.Android.setOnboardingComplete(true);
     }
     setStep('dashboard');
@@ -741,6 +934,8 @@ export default function App() {
               loadingApps={loadingApps} 
               toggleApp={toggleApp} 
               updateLimit={updateLimit} 
+              updateMode={updateMode}
+              updateTimeWindow={updateTimeWindow}
               finishSetup={finishSetup} 
             />
           )}

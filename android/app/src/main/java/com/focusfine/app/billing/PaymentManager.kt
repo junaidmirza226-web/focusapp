@@ -5,7 +5,9 @@ import android.content.Context
 import android.util.Log
 import com.android.billingclient.api.*
 import com.focusfine.app.FocusFineApp
+import com.focusfine.app.db.BlockReason
 import com.focusfine.app.db.Payment
+import com.focusfine.app.db.UnlockScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
@@ -27,6 +29,9 @@ class PaymentManager(private val context: Context) {
     private val coroutineScope = CoroutineScope(Dispatchers.Main)
     private var purchaseListener: ((Boolean, Payment?) -> Unit)? = null
     private var currentLockedPackage = ""
+    private var currentBlockReason = BlockReason.USAGE_LIMIT
+    private var currentUnlockScope = UnlockScope.REASON_ONLY
+    private var currentQuotedAmount: Double? = null
 
     init {
         setupBillingClient()
@@ -78,8 +83,18 @@ class PaymentManager(private val context: Context) {
         }
     }
 
-    fun launchPurchaseFlow(activity: Activity, productId: String, lockedPackage: String = "") {
+    fun launchPurchaseFlow(
+        activity: Activity,
+        productId: String,
+        lockedPackage: String = "",
+        blockReason: BlockReason = BlockReason.USAGE_LIMIT,
+        unlockScope: UnlockScope = UnlockScope.REASON_ONLY,
+        quotedAmount: Double? = null
+    ) {
         currentLockedPackage = lockedPackage
+        currentBlockReason = blockReason
+        currentUnlockScope = unlockScope
+        currentQuotedAmount = quotedAmount
         val params = QueryProductDetailsParams.newBuilder()
             .setProductList(listOf(
                 QueryProductDetailsParams.Product.newBuilder()
@@ -187,7 +202,8 @@ class PaymentManager(private val context: Context) {
         try {
             val productId = purchase.products.firstOrNull() ?: ""
             val packageName = getPurchasePackageName(productId)
-            val (amount, durationMinutes) = getPriceAndDuration(productId)
+            val (defaultAmount, durationMinutes) = getPriceAndDuration(productId)
+            val amount = currentQuotedAmount ?: defaultAmount
 
             val payment = Payment(
                 packageName = packageName,
@@ -195,11 +211,14 @@ class PaymentManager(private val context: Context) {
                 unlockDurationMinutes = durationMinutes,
                 unlockedAt = System.currentTimeMillis(),
                 expiresAt = System.currentTimeMillis() + (durationMinutes * 60 * 1000),
-                purchaseToken = purchase.purchaseToken
+                purchaseToken = purchase.purchaseToken,
+                blockReason = currentBlockReason.name,
+                unlockScope = currentUnlockScope.name
             )
 
             val db = FocusFineApp.database
             db.paymentDao().insert(payment)
+            currentQuotedAmount = null
 
             // Update preferences
             val prefs = FocusFineApp.preferences

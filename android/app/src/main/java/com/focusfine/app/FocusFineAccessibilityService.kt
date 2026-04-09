@@ -5,16 +5,21 @@ import android.accessibilityservice.AccessibilityServiceInfo
 import android.app.usage.UsageStatsManager
 import android.content.Context
 import android.content.Intent
+import android.os.Build
 import android.os.Handler
 import android.os.Looper
 import android.util.Log
 import android.view.accessibility.AccessibilityEvent
+import com.focusfine.app.db.BlockReason
+import com.focusfine.app.db.UnlockScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
+import java.util.concurrent.ConcurrentHashMap
 import java.util.Calendar
 
 /**
@@ -29,8 +34,19 @@ class FocusFineAccessibilityService : AccessibilityService() {
 
     companion object {
         private const val TAG = "FocusFineA11y"
-        private const val REDIRECT_DEBOUNCE_MS = 1500L
-        private const val EVENT_DEBOUNCE_MS = 500L
+        // Keep anti-loop debounce tight so hostile rapid reopens are still intercepted.
+        private const val REDIRECT_DEBOUNCE_MS = 120L
+        private const val EVENT_DEBOUNCE_MS = 50L
+        private const val FAST_PATH_CACHE_MS = 1500L
+
+        private data class CachedBlockDecision(
+            val appName: String,
+            val strictMode: Boolean,
+            val reason: BlockReason,
+            val blockEndsAt: Long?,
+            val unlockScope: UnlockScope,
+            val cachedAt: Long
+        )
 
         // Packages that should never trigger a lock redirect
         private val SYSTEM_PACKAGES = setOf(
@@ -50,14 +66,74 @@ class FocusFineAccessibilityService : AccessibilityService() {
 
         @Volatile
         private var activeInstance: FocusFineAccessibilityService? = null
+        private val recentBlockDecisions = ConcurrentHashMap<String, CachedBlockDecision>()
 
-        fun forceBlockPackage(packageName: String, appName: String, strictMode: Boolean) {
-            activeInstance?.postRedirect(packageName, appName, strictMode)
+        fun forceBlockPackage(
+            packageName: String,
+            appName: String,
+            strictMode: Boolean,
+            reason: BlockReason = BlockReason.USAGE_LIMIT,
+            blockEndsAt: Long? = null,
+            unlockScope: UnlockScope = UnlockScope.REASON_ONLY
+        ) {
+            cacheDecision(
+                packageName = packageName,
+                appName = appName,
+                strictMode = strictMode,
+                reason = reason,
+                blockEndsAt = blockEndsAt,
+                unlockScope = unlockScope,
+                now = System.currentTimeMillis()
+            )
+            activeInstance?.postRedirect(
+                packageName = packageName,
+                appName = appName,
+                strictMode = strictMode,
+                reason = reason,
+                blockEndsAt = blockEndsAt,
+                unlockScope = unlockScope
+            )
+        }
+
+        private fun cacheDecision(
+            packageName: String,
+            appName: String,
+            strictMode: Boolean,
+            reason: BlockReason,
+            blockEndsAt: Long?,
+            unlockScope: UnlockScope,
+            now: Long
+        ) {
+            recentBlockDecisions[packageName] = CachedBlockDecision(
+                appName = appName,
+                strictMode = strictMode,
+                reason = reason,
+                blockEndsAt = blockEndsAt,
+                unlockScope = unlockScope,
+                cachedAt = now
+            )
+        }
+
+        private fun clearDecision(packageName: String) {
+            recentBlockDecisions.remove(packageName)
+        }
+
+        private fun getFreshCachedDecision(
+            packageName: String,
+            now: Long
+        ): CachedBlockDecision? {
+            val cached = recentBlockDecisions[packageName] ?: return null
+            if ((now - cached.cachedAt) > FAST_PATH_CACHE_MS) {
+                recentBlockDecisions.remove(packageName)
+                return null
+            }
+            return cached
         }
     }
 
     private val serviceScope = CoroutineScope(SupervisorJob() + Dispatchers.IO)
     private val mainHandler = Handler(Looper.getMainLooper())
+    private val decisionEngine by lazy { BlockingDecisionEngine(FocusFineApp.database) }
     private val usageStatsManager by lazy {
         getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
     }
@@ -73,6 +149,8 @@ class FocusFineAccessibilityService : AccessibilityService() {
 
     @Volatile
     private var lastRedirectAt: Long = 0L
+    private var hasAttemptedMonitorStart = false
+    private val evaluationJobs = ConcurrentHashMap<String, Job>()
 
     override fun onServiceConnected() {
         activeInstance = this
@@ -83,14 +161,17 @@ class FocusFineAccessibilityService : AccessibilityService() {
                 AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED or
                 AccessibilityEvent.TYPE_WINDOWS_CHANGED
             feedbackType = AccessibilityServiceInfo.FEEDBACK_GENERIC
-            // 100 ms debounce — fast enough to catch instant switches, avoids noise
-            notificationTimeout = 100
+            // No framework batching delay on transitions; we handle debounce ourselves.
+            notificationTimeout = 0
             flags = 0
         }
+        ensureUsageMonitorServiceRunning()
         Log.d(TAG, "Accessibility service connected")
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        ensureUsageMonitorServiceRunning()
+
         if (
             event.eventType != AccessibilityEvent.TYPE_WINDOW_STATE_CHANGED &&
             event.eventType != AccessibilityEvent.TYPE_WINDOWS_CHANGED
@@ -107,20 +188,63 @@ class FocusFineAccessibilityService : AccessibilityService() {
         lastObservedPackage = pkg
         lastObservedAt = now
 
-        serviceScope.launch {
-            val blockDecision = evaluateBlockingState(pkg, now)
+        val cachedDecision = getFreshCachedDecision(pkg, now)
+        if (cachedDecision != null) {
+            redirectToLockScreen(
+                packageName = pkg,
+                appName = cachedDecision.appName,
+                strictMode = cachedDecision.strictMode,
+                reason = cachedDecision.reason,
+                blockEndsAt = cachedDecision.blockEndsAt,
+                unlockScope = cachedDecision.unlockScope,
+                eventObservedAt = now
+            )
+            return
+        }
 
-            if (blockDecision != null) {
-                FocusFineApp.lockedPackages.add(pkg)
-                FocusFineApp.lockedPackageNames[pkg] = blockDecision.appName
-                withContext(Dispatchers.Main) {
-                    redirectToLockScreen(pkg, blockDecision.appName, blockDecision.strictMode)
+        evaluationJobs.remove(pkg)?.cancel()
+        lateinit var evaluationJob: Job
+        evaluationJob = serviceScope.launch {
+            try {
+                val blockDecision = evaluateBlockingState(pkg, now)
+
+                if (blockDecision != null) {
+                    FocusFineApp.lockedPackages.add(pkg)
+                    FocusFineApp.lockedPackageNames[pkg] = blockDecision.appName
+                    cacheDecision(
+                        packageName = pkg,
+                        appName = blockDecision.appName,
+                        strictMode = blockDecision.strictMode,
+                        reason = blockDecision.reason,
+                        blockEndsAt = blockDecision.blockEndsAt,
+                        unlockScope = blockDecision.unlockScope,
+                        now = System.currentTimeMillis()
+                    )
+                    withContext(Dispatchers.Main) {
+                        redirectToLockScreen(
+                            packageName = pkg,
+                            appName = blockDecision.appName,
+                            strictMode = blockDecision.strictMode,
+                            reason = blockDecision.reason,
+                            blockEndsAt = blockDecision.blockEndsAt,
+                            unlockScope = blockDecision.unlockScope,
+                            eventObservedAt = now
+                        )
+                    }
+                } else {
+                    FocusFineApp.lockedPackages.remove(pkg)
+                    FocusFineApp.lockedPackageNames.remove(pkg)
+                    clearDecision(pkg)
                 }
-            } else {
-                FocusFineApp.lockedPackages.remove(pkg)
-                FocusFineApp.lockedPackageNames.remove(pkg)
+            } catch (t: Throwable) {
+                Log.e(TAG, "Failed to process accessibility event for $pkg", t)
+            } finally {
+                if (evaluationJobs[pkg] === evaluationJob) {
+                    evaluationJobs.remove(pkg)
+                }
             }
         }
+        evaluationJobs[pkg] = evaluationJob
     }
 
     override fun onInterrupt() {
@@ -139,26 +263,20 @@ class FocusFineAccessibilityService : AccessibilityService() {
         packageName: String,
         now: Long
     ): BlockDecision? {
-        val db = FocusFineApp.database
-        val settings = db.userSettingsDao().getSettings(packageName) ?: return null
-        if (!settings.isEnabled) return null
-
-        val activeUnlocks = db.paymentDao().getActiveUnlocks(packageName, now)
-        if (activeUnlocks.isNotEmpty()) return null
-
         val todayStart = getTodayStartMillis()
-        val rawUsageMinutes = getUsageMinutesToday(packageName, todayStart, now)
-        val baseUsage = if (todayStart > settings.lastResetDate) 0L else settings.baseUsageMinutes
-        val effectiveUsage = (rawUsageMinutes - baseUsage).coerceAtLeast(0L)
-
-        return if (effectiveUsage >= settings.dailyLimitMinutes.toLong()) {
-            BlockDecision(
-                appName = settings.appName.ifEmpty { packageName },
-                strictMode = FocusFineApp.preferences.isStrictModeEnabled
-            )
-        } else {
-            null
-        }
+        val evaluation = decisionEngine.evaluate(
+            packageName = packageName,
+            now = now,
+            todayStartMillis = todayStart,
+            rawUsageMinutesTodayProvider = {
+                getUsageMinutesToday(
+                    packageName = packageName,
+                    todayStart = todayStart,
+                    now = now
+                )
+            }
+        )
+        return evaluation.decision
     }
 
     private fun getUsageMinutesToday(
@@ -171,16 +289,54 @@ class FocusFineAccessibilityService : AccessibilityService() {
         return if (usage != null) usage.totalTimeInForeground / 60_000L else 0L
     }
 
-    private fun postRedirect(packageName: String, appName: String, strictMode: Boolean) {
+    private fun postRedirect(
+        packageName: String,
+        appName: String,
+        strictMode: Boolean,
+        reason: BlockReason,
+        blockEndsAt: Long?,
+        unlockScope: UnlockScope
+    ) {
         mainHandler.post {
-            redirectToLockScreen(packageName, appName, strictMode)
+            redirectToLockScreen(
+                packageName = packageName,
+                appName = appName,
+                strictMode = strictMode,
+                reason = reason,
+                blockEndsAt = blockEndsAt,
+                unlockScope = unlockScope,
+                eventObservedAt = System.currentTimeMillis()
+            )
+        }
+    }
+
+    private fun ensureUsageMonitorServiceRunning() {
+        if (!FocusFineApp.preferences.isOnboardingComplete) return
+        if (hasAttemptedMonitorStart) return
+        hasAttemptedMonitorStart = true
+
+        val intent = Intent(this, UsageMonitorService::class.java)
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(intent)
+            } else {
+                startService(intent)
+            }
+            Log.d(TAG, "Requested UsageMonitorService start from accessibility binding")
+        } catch (t: Throwable) {
+            hasAttemptedMonitorStart = false
+            Log.w(TAG, "Unable to start UsageMonitorService from accessibility binding", t)
         }
     }
 
     private fun redirectToLockScreen(
         packageName: String,
         appName: String,
-        strictMode: Boolean
+        strictMode: Boolean,
+        reason: BlockReason,
+        blockEndsAt: Long?,
+        unlockScope: UnlockScope,
+        eventObservedAt: Long
     ) {
         val now = System.currentTimeMillis()
         if (packageName == lastRedirectedPackage && (now - lastRedirectAt) < REDIRECT_DEBOUNCE_MS) {
@@ -190,15 +346,23 @@ class FocusFineAccessibilityService : AccessibilityService() {
         lastRedirectedPackage = packageName
         lastRedirectAt = now
 
-        Log.d(TAG, "Blocking $packageName ($appName) — limit exceeded")
+        val latencyMs = now - eventObservedAt
+        Log.d(
+            TAG,
+            "Blocking $packageName ($appName) reason=$reason latency=${latencyMs}ms blockEndsAt=${blockEndsAt ?: -1L}"
+        )
         val intent = Intent(this, OverlayActivity::class.java).apply {
             addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_CLEAR_TASK
+                Intent.FLAG_ACTIVITY_CLEAR_TASK or
+                Intent.FLAG_ACTIVITY_NO_ANIMATION
             )
             putExtra("LOCKED_PACKAGE", packageName)
             putExtra("APP_NAME", appName)
             putExtra("STRICT_MODE", strictMode)
+            putExtra("BLOCK_REASON", reason.name)
+            putExtra("BLOCK_ENDS_AT", blockEndsAt ?: -1L)
+            putExtra("UNLOCK_SCOPE", unlockScope.name)
         }
 
         try {
@@ -217,9 +381,4 @@ class FocusFineAccessibilityService : AccessibilityService() {
             set(Calendar.MILLISECOND, 0)
         }.timeInMillis
     }
-
-    private data class BlockDecision(
-        val appName: String,
-        val strictMode: Boolean
-    )
 }

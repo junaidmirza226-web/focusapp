@@ -4,6 +4,7 @@ import androidx.room.Dao
 import androidx.room.Insert
 import androidx.room.Update
 import androidx.room.Delete
+import androidx.room.OnConflictStrategy
 import androidx.room.Query
 import kotlinx.coroutines.flow.Flow
 
@@ -47,6 +48,35 @@ interface PaymentDao {
 
     @Query("SELECT COUNT(*) FROM payments WHERE packageName = :packageName AND unlockedAt >= :todayStart")
     suspend fun getUnlockCountToday(packageName: String, todayStart: Long): Int
+
+    @Query(
+        """
+        SELECT * FROM payments
+        WHERE packageName = :packageName
+          AND expiresAt > :currentTime
+          AND (unlockScope = 'ALL_RULES' OR blockReason = :blockReason)
+        ORDER BY unlockedAt DESC
+        """
+    )
+    suspend fun getActiveUnlocksForReason(
+        packageName: String,
+        blockReason: String,
+        currentTime: Long
+    ): List<Payment>
+
+    @Query(
+        """
+        SELECT COUNT(*) FROM payments
+        WHERE packageName = :packageName
+          AND unlockedAt >= :todayStart
+          AND blockReason = :blockReason
+        """
+    )
+    suspend fun getUnlockCountTodayForReason(
+        packageName: String,
+        blockReason: String,
+        todayStart: Long
+    ): Int
 }
 
 @Dao
@@ -74,6 +104,33 @@ interface UserSettingsDao {
 
     @Query("UPDATE user_settings SET lastResetTime = :newTime WHERE packageName = :packageName")
     suspend fun updateResetTime(packageName: String, newTime: Long)
+}
+
+@Dao
+interface TimeBlockRuleDao {
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insert(rule: TimeBlockRule)
+
+    @Insert(onConflict = OnConflictStrategy.REPLACE)
+    suspend fun insertAll(rules: List<TimeBlockRule>)
+
+    @Update
+    suspend fun update(rule: TimeBlockRule)
+
+    @Delete
+    suspend fun delete(rule: TimeBlockRule)
+
+    @Query("DELETE FROM time_block_rules WHERE packageName = :packageName")
+    suspend fun deleteByPackage(packageName: String)
+
+    @Query("SELECT * FROM time_block_rules WHERE packageName = :packageName")
+    suspend fun getRulesForPackage(packageName: String): List<TimeBlockRule>
+
+    @Query("SELECT * FROM time_block_rules WHERE packageName = :packageName AND isEnabled = 1")
+    suspend fun getEnabledRulesForPackage(packageName: String): List<TimeBlockRule>
+
+    @Query("SELECT * FROM time_block_rules WHERE isEnabled = 1")
+    suspend fun getAllEnabledRules(): List<TimeBlockRule>
 }
 
 @Dao

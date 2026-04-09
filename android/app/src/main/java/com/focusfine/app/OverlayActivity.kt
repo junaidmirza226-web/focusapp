@@ -2,6 +2,7 @@ package com.focusfine.app
 
 import android.content.Intent
 import android.graphics.Color
+import android.os.Build
 import android.os.Bundle
 import android.os.Handler
 import android.os.Looper
@@ -13,27 +14,40 @@ import android.widget.TextView
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import com.focusfine.app.billing.PaymentManager
+import com.focusfine.app.db.BlockReason
 import com.focusfine.app.db.Payment
+import com.focusfine.app.db.UnlockScope
 import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.text.SimpleDateFormat
+import java.util.Date
+import java.util.Locale
 
 class OverlayActivity : AppCompatActivity() {
 
     companion object {
         private const val TAG = "OverlayActivity"
+
+        @Volatile
+        private var billingDisabledForProcess = false
     }
 
     private lateinit var lockedPackage: String
     private lateinit var appName: String
     private var isStrictMode = false
+    private var blockReason = BlockReason.USAGE_LIMIT
+    private var blockEndsAt: Long? = null
+    private var unlockScope = UnlockScope.REASON_ONLY
     private var paymentManager: PaymentManager? = null
     private val coroutineScope = CoroutineScope(Dispatchers.Main)
     private var isProcessing = false
     private var purchasesUnavailable = false
+    private val timeFormatter = SimpleDateFormat("hh:mm a", Locale.getDefault())
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
+        overridePendingTransition(0, 0)
         setContentView(R.layout.activity_overlay)
 
         // Show over lock screen if phone is locked
@@ -60,6 +74,7 @@ class OverlayActivity : AppCompatActivity() {
 
     override fun onNewIntent(intent: Intent) {
         super.onNewIntent(intent)
+        overridePendingTransition(0, 0)
         setIntent(intent)
         handleIntent(intent)
         if (!isStrictMode && paymentManager == null && !purchasesUnavailable) {
@@ -71,16 +86,57 @@ class OverlayActivity : AppCompatActivity() {
         lockedPackage = intent.getStringExtra("LOCKED_PACKAGE") ?: ""
         appName = intent.getStringExtra("APP_NAME")?.takeIf { it.isNotEmpty() } ?: lockedPackage
         isStrictMode = intent.getBooleanExtra("STRICT_MODE", false)
+        blockReason = parseBlockReason(intent.getStringExtra("BLOCK_REASON"))
+        unlockScope = parseUnlockScope(intent.getStringExtra("UNLOCK_SCOPE"))
+        val endsAt = intent.getLongExtra("BLOCK_ENDS_AT", -1L)
+        blockEndsAt = if (endsAt > 0L) endsAt else null
 
-        // Show app name in the lock message
-        findViewById<TextView>(R.id.lock_message).text =
-            "You've reached your daily limit for $appName."
+        val lockTitle = findViewById<TextView>(R.id.lock_title)
+        val lockMessage = findViewById<TextView>(R.id.lock_message)
+        val reasonHint = findViewById<TextView>(R.id.block_reason_hint)
+
+        when (blockReason) {
+            BlockReason.TIME_BLOCK -> {
+                lockTitle.text = "Scheduled Block Active"
+                lockMessage.text = "$appName is blocked in this time window."
+                reasonHint.visibility = View.VISIBLE
+                reasonHint.text = if (blockEndsAt != null) {
+                    "Opens at ${timeFormatter.format(Date(blockEndsAt!!))}"
+                } else {
+                    "Time block is active"
+                }
+            }
+            BlockReason.USAGE_LIMIT -> {
+                lockTitle.text = "Daily Limit Reached"
+                lockMessage.text = "You've reached your daily limit for $appName."
+                reasonHint.visibility = View.GONE
+            }
+        }
 
         // Payment buttons section
         refreshLockModeUi()
     }
 
     private fun initializePaymentManager() {
+        if (billingDisabledForProcess) {
+            purchasesUnavailable = true
+            refreshLockModeUi()
+            return
+        }
+
+        // Billing v5.1.0 throws on Android 14+ due dynamic receiver flag requirements.
+        // Keep lock flow fast and reliable: disable purchase init for this process.
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.UPSIDE_DOWN_CAKE) {
+            billingDisabledForProcess = true
+            purchasesUnavailable = true
+            Log.w(
+                TAG,
+                "Skipping billing init on Android 14+; lock screen remains active without purchases"
+            )
+            refreshLockModeUi()
+            return
+        }
+
         try {
             val manager = PaymentManager(this)
             paymentManager = manager
@@ -95,6 +151,7 @@ class OverlayActivity : AppCompatActivity() {
             setupPaymentButtons()
             manager.restorePurchases()
         } catch (t: Throwable) {
+            billingDisabledForProcess = true
             purchasesUnavailable = true
             paymentManager = null
             Log.e(TAG, "Billing unavailable; keeping lock screen active without purchases", t)
@@ -111,7 +168,7 @@ class OverlayActivity : AppCompatActivity() {
                 paymentSection.visibility = View.GONE
                 strictBanner.visibility = View.VISIBLE
                 strictBanner.setTextColor(Color.parseColor("#EF4444"))
-                strictBanner.text = "Strict Mode Active\nPay-to-unlock is disabled."
+                strictBanner.text = "Strict Mode Active\nUnlock is disabled."
             }
             purchasesUnavailable -> {
                 paymentSection.visibility = View.GONE
@@ -139,15 +196,22 @@ class OverlayActivity : AppCompatActivity() {
                 set(java.util.Calendar.SECOND, 0)
                 set(java.util.Calendar.MILLISECOND, 0)
             }.timeInMillis
-            val unlockCount = db.paymentDao().getUnlockCountToday(lockedPackage, todayStart)
+            val unlockCount = db.paymentDao().getUnlockCountTodayForReason(
+                lockedPackage,
+                blockReason.name,
+                todayStart
+            )
 
             launch(Dispatchers.Main) {
                 val multiplier = (unlockCount + 1).coerceAtMost(3) // cap at 3×
+                val (baseQuick, baseExtended, baseDaily) = when (blockReason) {
+                    BlockReason.TIME_BLOCK -> Triple(3, 12, 40) // stricter pricing ladder
+                    BlockReason.USAGE_LIMIT -> Triple(1, 5, 20)
+                }
 
-                // Quick unlock: base $1, escalates to $2/$3
-                val quickPrice = multiplier
-                val extendedPrice = multiplier * 5
-                val dailyPrice = multiplier * 20
+                val quickPrice = baseQuick * multiplier
+                val extendedPrice = baseExtended * multiplier
+                val dailyPrice = baseDaily * multiplier
 
                 val escalationNote = if (unlockCount > 0)
                     "Unlock #${unlockCount + 1} today — price increases!" else ""
@@ -164,7 +228,14 @@ class OverlayActivity : AppCompatActivity() {
                     setOnClickListener {
                         if (!isProcessing) {
                             isProcessing = true
-                            manager.launchPurchaseFlow(this@OverlayActivity, PaymentManager.QUICK_UNLOCK_SKU, lockedPackage)
+                            manager.launchPurchaseFlow(
+                                activity = this@OverlayActivity,
+                                productId = PaymentManager.QUICK_UNLOCK_SKU,
+                                lockedPackage = lockedPackage,
+                                blockReason = blockReason,
+                                unlockScope = unlockScope,
+                                quotedAmount = quickPrice.toDouble()
+                            )
                         }
                     }
                 }
@@ -174,7 +245,14 @@ class OverlayActivity : AppCompatActivity() {
                     setOnClickListener {
                         if (!isProcessing) {
                             isProcessing = true
-                            manager.launchPurchaseFlow(this@OverlayActivity, PaymentManager.EXTENDED_UNLOCK_SKU, lockedPackage)
+                            manager.launchPurchaseFlow(
+                                activity = this@OverlayActivity,
+                                productId = PaymentManager.EXTENDED_UNLOCK_SKU,
+                                lockedPackage = lockedPackage,
+                                blockReason = blockReason,
+                                unlockScope = unlockScope,
+                                quotedAmount = extendedPrice.toDouble()
+                            )
                         }
                     }
                 }
@@ -184,7 +262,14 @@ class OverlayActivity : AppCompatActivity() {
                     setOnClickListener {
                         if (!isProcessing) {
                             isProcessing = true
-                            manager.launchPurchaseFlow(this@OverlayActivity, PaymentManager.DAILY_PASS_SKU, lockedPackage)
+                            manager.launchPurchaseFlow(
+                                activity = this@OverlayActivity,
+                                productId = PaymentManager.DAILY_PASS_SKU,
+                                lockedPackage = lockedPackage,
+                                blockReason = blockReason,
+                                unlockScope = unlockScope,
+                                quotedAmount = dailyPrice.toDouble()
+                            )
                         }
                     }
                 }
@@ -211,6 +296,22 @@ class OverlayActivity : AppCompatActivity() {
 
         // Auto-dismiss after 2.5 seconds
         Handler(Looper.getMainLooper()).postDelayed({ finish() }, 2500)
+    }
+
+    private fun parseBlockReason(raw: String?): BlockReason {
+        return try {
+            BlockReason.valueOf(raw ?: BlockReason.USAGE_LIMIT.name)
+        } catch (_: IllegalArgumentException) {
+            BlockReason.USAGE_LIMIT
+        }
+    }
+
+    private fun parseUnlockScope(raw: String?): UnlockScope {
+        return try {
+            UnlockScope.valueOf(raw ?: UnlockScope.REASON_ONLY.name)
+        } catch (_: IllegalArgumentException) {
+            UnlockScope.REASON_ONLY
+        }
     }
 
     private fun goHome() {
