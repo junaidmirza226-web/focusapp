@@ -302,6 +302,11 @@ class UsageMonitorService : Service() {
                         TAG,
                         "Monitor tick slow: ${elapsed}ms apps=${enabledApps.size} current=$currentApp fullScan=$shouldRunFullScan"
                     )
+                    DiagnosticsTimeline.record(
+                        source = TAG,
+                        event = "monitor_tick_slow",
+                        details = "elapsedMs=$elapsed apps=${enabledApps.size} current=${currentApp ?: "none"}"
+                    )
                 }
               } catch (e: Exception) {
                 // Catch all errors inside the coroutine so they never escape to crash the process.

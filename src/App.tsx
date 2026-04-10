@@ -44,6 +44,7 @@ declare global {
       getSupportDiagnostics?: () => string;
       getUnlockQuote?: (pkg: string, reason: string) => string;
       getPremiumInsights?: () => string;
+      getPremiumTrustState?: () => string;
       setStrictMode: (enabled: boolean) => void;
       requestUsageAccess: () => void;
       requestOverlay: () => void;
@@ -171,6 +172,27 @@ interface PremiumInsights {
   activeUnlocksNow: number;
   strictMode: boolean;
   recommendation: string;
+}
+
+interface PremiumTrustState {
+  generatedAt: number;
+  localOnlyStorage: boolean;
+  cloudSyncEnabled: boolean;
+  diagnosticsStoredInMemory: boolean;
+  forceStopCaveat: string;
+  hasCorePermissions: boolean;
+  serviceHealthy: boolean;
+  restartRecoveryAttempts24h: number;
+  restartRecoveryFailures24h: number;
+  blockedRedirects24h: number;
+  overlayLaunchFailures24h: number;
+  monitorSlowTicks24h: number;
+  latencySamples: number;
+  latencyMedianMs: number | null;
+  latencyP95Ms: number | null;
+  latencyMaxMs: number | null;
+  reliabilityTier: 'HARDENED' | 'DEGRADED' | 'UNSTABLE' | 'REPAIR_REQUIRED' | string;
+  reliabilityMessage: string;
 }
 
 type SupportCopyState = 'idle' | 'copied' | 'failed';
@@ -1177,6 +1199,7 @@ const DashboardView = ({
   supportCopyState,
   unlockQuotes,
   premiumInsights,
+  premiumTrustState,
   openManagement,
   openRepair,
   toggleStrictMode,
@@ -1195,6 +1218,7 @@ const DashboardView = ({
     time: UnlockQuote | null;
   };
   premiumInsights: PremiumInsights | null;
+  premiumTrustState: PremiumTrustState | null;
   openManagement: (packageName?: string) => void;
   openRepair: () => void;
   toggleStrictMode: (enabled: boolean) => void;
@@ -1208,6 +1232,16 @@ const DashboardView = ({
   const usageQuote = unlockQuotes.usage ?? FALLBACK_USAGE_QUOTE;
   const timeQuote = unlockQuotes.time ?? FALLBACK_TIME_QUOTE;
   const insights = premiumInsights;
+  const trust = premiumTrustState;
+  const trustTier = trust?.reliabilityTier ?? 'PENDING';
+  const trustTierTone =
+    trustTier === 'HARDENED'
+      ? 'border-emerald-500/35 bg-emerald-500/10 text-emerald-200'
+      : trustTier === 'DEGRADED'
+        ? 'border-amber-400/35 bg-amber-500/10 text-amber-200'
+        : trustTier === 'UNSTABLE' || trustTier === 'REPAIR_REQUIRED'
+          ? 'border-rose-500/35 bg-rose-500/12 text-rose-200'
+          : 'border-white/8 bg-white/5 text-zinc-300';
 
   return (
     <div className="relative mx-auto flex min-h-screen w-full max-w-4xl flex-col px-6 py-10 pb-32">
@@ -1421,6 +1455,55 @@ const DashboardView = ({
             </p>
           </div>
         </div>
+
+        <div className="rounded-[2.3rem] border border-white/6 bg-zinc-950/85 p-6 shadow-2xl">
+          <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-zinc-500">Privacy and trust signals</p>
+          <h2 className="mt-2 text-2xl font-black text-white">Evidence-backed reliability</h2>
+          <p className="mt-2 text-sm leading-6 text-zinc-400">
+            This view is computed from live runtime events. It shows whether the guard is stable, recovering, or under pressure.
+          </p>
+
+          <div className={`mt-4 inline-flex rounded-full border px-4 py-2 text-[11px] font-bold uppercase tracking-[0.2em] ${trustTierTone}`}>
+            Tier: {trustTier.replace('_', ' ')}
+          </div>
+
+          <div className="mt-5 grid gap-3 sm:grid-cols-2">
+            <div className="rounded-[1.4rem] border border-white/6 bg-black/25 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Storage</p>
+              <p className="mt-2 text-sm font-semibold text-white">{trust?.localOnlyStorage ? 'On-device only' : 'Check policy'}</p>
+              <p className="mt-1 text-xs text-zinc-500">{trust?.cloudSyncEnabled ? 'Cloud sync enabled' : 'No cloud sync enabled'}</p>
+            </div>
+            <div className="rounded-[1.4rem] border border-white/6 bg-black/25 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Recovery (24h)</p>
+              <p className="mt-2 text-sm font-semibold text-white">
+                Attempts {trust?.restartRecoveryAttempts24h ?? 0} | Failures {trust?.restartRecoveryFailures24h ?? 0}
+              </p>
+            </div>
+            <div className="rounded-[1.4rem] border border-white/6 bg-black/25 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Intercepts (24h)</p>
+              <p className="mt-2 text-sm font-semibold text-white">
+                Redirects {trust?.blockedRedirects24h ?? 0} | Overlay failures {trust?.overlayLaunchFailures24h ?? 0}
+              </p>
+            </div>
+            <div className="rounded-[1.4rem] border border-white/6 bg-black/25 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Latency</p>
+              <p className="mt-2 text-sm font-semibold text-white">
+                p95 {trust?.latencyP95Ms ?? '-'}ms | max {trust?.latencyMaxMs ?? '-'}ms
+              </p>
+              <p className="mt-1 text-xs text-zinc-500">samples {trust?.latencySamples ?? 0}</p>
+            </div>
+          </div>
+
+          <div className="mt-5 rounded-[1.4rem] border border-white/6 bg-black/25 px-4 py-4">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Interpretation</p>
+            <p className="mt-2 text-sm text-zinc-100">
+              {trust?.reliabilityMessage ?? 'Refresh diagnostics to calculate live trust signals.'}
+            </p>
+            <p className="mt-2 text-xs text-zinc-500">
+              {trust?.forceStopCaveat ?? 'Force-stop remains an Android OS-level kill path.'}
+            </p>
+          </div>
+        </div>
       </div>
 
       <section className="relative z-10 mt-10">
@@ -1515,6 +1598,7 @@ export default function App() {
   const [supportDiagnostics, setSupportDiagnostics] = useState<SupportDiagnostics | null>(null);
   const [supportCopyState, setSupportCopyState] = useState<SupportCopyState>('idle');
   const [premiumInsights, setPremiumInsights] = useState<PremiumInsights | null>(null);
+  const [premiumTrustState, setPremiumTrustState] = useState<PremiumTrustState | null>(null);
   const [unlockQuotes, setUnlockQuotes] = useState<{
     usage: UnlockQuote | null;
     time: UnlockQuote | null;
@@ -1577,6 +1661,17 @@ export default function App() {
     try {
       const parsed = JSON.parse(window.Android.getPremiumInsights()) as PremiumInsights;
       setPremiumInsights(parsed);
+      return parsed;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const loadPremiumTrustState = useCallback(() => {
+    if (!window.Android?.getPremiumTrustState) return null;
+    try {
+      const parsed = JSON.parse(window.Android.getPremiumTrustState()) as PremiumTrustState;
+      setPremiumTrustState(parsed);
       return parsed;
     } catch {
       return null;
@@ -1689,15 +1784,16 @@ export default function App() {
       });
 
       setInstalledApps(nextApps);
-      if (editorPackage && !nextApps.some(app => app.packageName === editorPackage)) {
-        setEditorPackage(null);
-      }
+      setEditorPackage(currentEditorPackage => {
+        if (!currentEditorPackage) return currentEditorPackage;
+        return nextApps.some(app => app.packageName === currentEditorPackage) ? currentEditorPackage : null;
+      });
     } catch {
       setInstalledApps(DEMO_INSTALLED);
     } finally {
       setLoadingApps(false);
     }
-  }, [editorPackage, readPolicies]);
+  }, [readPolicies]);
 
   const loadDashboard = useCallback(() => {
     if (!window.Android) return;
@@ -1750,11 +1846,12 @@ export default function App() {
       setWeeklyData(JSON.parse(window.Android.getWeeklyStats()));
       loadSupportDiagnostics();
       loadPremiumInsights();
+      loadPremiumTrustState();
       loadUnlockQuotes(nextApps[0]?.packageName ?? null);
     } catch {
       // Keep previous dashboard state if parsing fails.
     }
-  }, [loadPremiumInsights, loadSupportDiagnostics, loadUnlockQuotes, readPolicies]);
+  }, [loadPremiumInsights, loadPremiumTrustState, loadSupportDiagnostics, loadUnlockQuotes, readPolicies]);
 
   const persistPolicies = useCallback((appsToPersist: PolicyApp[]) => {
     if (!window.Android) return;
@@ -1942,6 +2039,7 @@ export default function App() {
   const refreshDiagnostics = () => {
     loadSupportDiagnostics();
     loadPremiumInsights();
+    loadPremiumTrustState();
     if (!unlockQuotes.usage && monitoredApps.length > 0) {
       loadUnlockQuotes(monitoredApps[0].packageName);
     }
@@ -2049,6 +2147,7 @@ export default function App() {
               supportCopyState={supportCopyState}
               unlockQuotes={unlockQuotes}
               premiumInsights={premiumInsights}
+              premiumTrustState={premiumTrustState}
               openManagement={openManagement}
               openRepair={() => setStep('repair')}
               toggleStrictMode={toggleStrictMode}

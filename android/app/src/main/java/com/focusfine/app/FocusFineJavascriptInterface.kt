@@ -604,6 +604,127 @@ class FocusFineJavascriptInterface(
     }
 
     /**
+     * Returns premium trust and reliability signals backed by live runtime events.
+     * Data is local-only and read-only for UI framing.
+     */
+    @JavascriptInterface
+    fun getPremiumTrustState(): String {
+        return runBlocking(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            val since24h = now - 86_400_000L
+            val recentEvents = DiagnosticsTimeline.snapshot(limit = 180)
+
+            var restartRecoveryAttempts24h = 0
+            var restartRecoveryFailures24h = 0
+            var blockedRedirects24h = 0
+            var overlayLaunchFailures24h = 0
+            var monitorSlowTicks24h = 0
+            val redirectLatencies = mutableListOf<Long>()
+
+            for (i in 0 until recentEvents.length()) {
+                val row = recentEvents.optJSONObject(i) ?: continue
+                val atMs = row.optLong("atMs", 0L)
+                if (atMs < since24h) continue
+
+                val event = row.optString("event", "")
+                val details = row.opt("details") as? String
+
+                when (event) {
+                    "redirect_to_overlay" -> {
+                        blockedRedirects24h += 1
+                        parseLatencyMs(details)?.let { redirectLatencies.add(it) }
+                    }
+                    "overlay_launch_failed_fallback_home" -> {
+                        overlayLaunchFailures24h += 1
+                        restartRecoveryFailures24h += 1
+                    }
+                    "monitor_tick_slow" -> {
+                        monitorSlowTicks24h += 1
+                    }
+                    "task_removed_restart_requested",
+                    "monitor_destroyed_restart_requested",
+                    "restart_scheduled",
+                    "restart_broadcast_received",
+                    "monitor_start_requested_on_boot",
+                    "monitor_start_requested_from_a11y",
+                    "monitor_start_requested" -> {
+                        restartRecoveryAttempts24h += 1
+                    }
+                    "restart_broadcast_failed",
+                    "monitor_destroyed_restart_failed",
+                    "monitor_start_failed_on_boot",
+                    "monitor_start_failed_from_a11y",
+                    "monitor_start_failed" -> {
+                        restartRecoveryFailures24h += 1
+                    }
+                }
+            }
+
+            val usageAccess = hasUsageAccess()
+            val overlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Settings.canDrawOverlays(context)
+            } else {
+                true
+            }
+            val accessibility = hasAccessibilityServiceEnabled()
+            val hasCorePermissions = usageAccess && overlay && accessibility
+            val heartbeatAgeMs = if (prefs.lastServiceCheckTime > 0L) {
+                (now - prefs.lastServiceCheckTime).coerceAtLeast(0L)
+            } else {
+                Long.MAX_VALUE
+            }
+            val serviceHealthy =
+                prefs.isMonitoringServiceRunning && heartbeatAgeMs <= 15_000L
+
+            val latencyMedian = percentile(redirectLatencies, 0.50)
+            val latencyP95 = percentile(redirectLatencies, 0.95)
+            val latencyMax = redirectLatencies.maxOrNull()
+
+            val reliabilityTier = when {
+                !hasCorePermissions || !serviceHealthy -> "REPAIR_REQUIRED"
+                overlayLaunchFailures24h > 0 || restartRecoveryFailures24h > 0 -> "UNSTABLE"
+                (latencyP95 ?: 0L) > 300L || monitorSlowTicks24h >= 4 -> "DEGRADED"
+                else -> "HARDENED"
+            }
+
+            val reliabilityMessage = when (reliabilityTier) {
+                "REPAIR_REQUIRED" ->
+                    "One or more protection layers need repair before confidence is restored."
+                "UNSTABLE" ->
+                    "Recent recovery or overlay failures were detected. Keep diagnostics on and re-check health."
+                "DEGRADED" ->
+                    "Protection is active, but latency pressure is rising. Tighten background stability settings."
+                else ->
+                    "Protection is stable with no critical recovery failures in the last 24 hours."
+            }
+
+            JSONObject().apply {
+                put("generatedAt", now)
+                put("localOnlyStorage", true)
+                put("cloudSyncEnabled", false)
+                put("diagnosticsStoredInMemory", true)
+                put(
+                    "forceStopCaveat",
+                    "Android force-stop is an OS kill switch. Recents swipe is hardened, but force-stop still requires user re-entry."
+                )
+                put("hasCorePermissions", hasCorePermissions)
+                put("serviceHealthy", serviceHealthy)
+                put("restartRecoveryAttempts24h", restartRecoveryAttempts24h)
+                put("restartRecoveryFailures24h", restartRecoveryFailures24h)
+                put("blockedRedirects24h", blockedRedirects24h)
+                put("overlayLaunchFailures24h", overlayLaunchFailures24h)
+                put("monitorSlowTicks24h", monitorSlowTicks24h)
+                put("latencySamples", redirectLatencies.size)
+                put("latencyMedianMs", latencyMedian ?: JSONObject.NULL)
+                put("latencyP95Ms", latencyP95 ?: JSONObject.NULL)
+                put("latencyMaxMs", latencyMax ?: JSONObject.NULL)
+                put("reliabilityTier", reliabilityTier)
+                put("reliabilityMessage", reliabilityMessage)
+            }.toString()
+        }
+    }
+
+    /**
      * Returns a compact diagnostic bundle for support/recovery flows.
      * This is intentionally on-demand so the UI can copy exact live state.
      */
@@ -803,6 +924,25 @@ class FocusFineJavascriptInterface(
         val statsMap = usm.queryAndAggregateUsageStats(getTodayStartMillis(), now)
         val usage = statsMap?.get(packageName)
         return if (usage != null) usage.totalTimeInForeground / 1000L / 60L else 0L
+    }
+
+    private fun parseLatencyMs(details: String?): Long? {
+        if (details.isNullOrBlank()) return null
+        val marker = "latencyMs="
+        val markerIndex = details.indexOf(marker)
+        if (markerIndex < 0) return null
+        val rawValue = details
+            .substring(markerIndex + marker.length)
+            .takeWhile { it.isDigit() }
+        return rawValue.toLongOrNull()
+    }
+
+    private fun percentile(values: List<Long>, p: Double): Long? {
+        if (values.isEmpty()) return null
+        val sorted = values.sorted()
+        val rank = kotlin.math.ceil(p.coerceIn(0.0, 1.0) * sorted.size).toInt() - 1
+        val safeIndex = rank.coerceIn(0, sorted.lastIndex)
+        return sorted[safeIndex]
     }
 
     private fun getAppVersionLabel(): String {
