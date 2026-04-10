@@ -15,6 +15,11 @@ class ServiceRestartReceiver : BroadcastReceiver() {
         if (!FocusFineApp.preferences.isOnboardingComplete) return
 
         try {
+            DiagnosticsTimeline.record(
+                source = TAG,
+                event = "restart_broadcast_received",
+                details = intent.getStringExtra("reason") ?: "unknown"
+            )
             val serviceIntent = Intent(context, UsageMonitorService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 context.startForegroundService(serviceIntent)
@@ -24,6 +29,11 @@ class ServiceRestartReceiver : BroadcastReceiver() {
             Log.d(TAG, "UsageMonitorService restart broadcast delivered")
         } catch (t: Throwable) {
             Log.e(TAG, "Failed to restart UsageMonitorService from broadcast", t)
+            DiagnosticsTimeline.record(
+                source = TAG,
+                event = "restart_broadcast_failed",
+                details = t.javaClass.simpleName
+            )
         }
     }
 
@@ -55,6 +65,11 @@ class ServiceRestartReceiver : BroadcastReceiver() {
             } else {
                 alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
             }
+            DiagnosticsTimeline.record(
+                source = TAG,
+                event = "restart_scheduled",
+                details = "reason=$reason delayMs=${triggerAt - System.currentTimeMillis()}"
+            )
             Log.d(TAG, "Scheduled UsageMonitorService restart in ${triggerAt - System.currentTimeMillis()}ms ($reason)")
         }
     }

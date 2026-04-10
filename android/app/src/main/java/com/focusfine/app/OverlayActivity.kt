@@ -118,6 +118,12 @@ class OverlayActivity : AppCompatActivity() {
             }
         }
 
+        DiagnosticsTimeline.record(
+            source = TAG,
+            event = "overlay_presented",
+            details = "pkg=$lockedPackage reason=$blockReason strict=$isStrictMode"
+        )
+
         // Payment buttons section
         refreshLockModeUi()
     }
@@ -302,6 +308,11 @@ class OverlayActivity : AppCompatActivity() {
         successView.visibility = View.VISIBLE
 
         Log.d(TAG, "Purchase successful: \$${payment.amount} for $durationText")
+        DiagnosticsTimeline.record(
+            source = TAG,
+            event = "unlock_purchase_success",
+            details = "pkg=$lockedPackage reason=$blockReason amount=${payment.amount}"
+        )
 
         // Auto-dismiss after 2.5 seconds
         Handler(Looper.getMainLooper()).postDelayed({ finish() }, 2500)
@@ -324,6 +335,7 @@ class OverlayActivity : AppCompatActivity() {
     }
 
     private fun goHome() {
+        DiagnosticsTimeline.record(source = TAG, event = "overlay_go_home")
         startActivity(
             Intent(Intent.ACTION_MAIN)
                 .addCategory(Intent.CATEGORY_HOME)

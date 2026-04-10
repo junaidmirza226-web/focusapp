@@ -592,6 +592,7 @@ class FocusFineJavascriptInterface(
                 put("generatedAtReadable", Date(now).toString())
                 put("appVersion", getAppVersionLabel())
                 put("androidSdk", Build.VERSION.SDK_INT)
+                put("currentProcessId", Process.myPid())
                 put("deviceBrand", Build.BRAND ?: "unknown")
                 put("deviceModel", Build.MODEL ?: "unknown")
                 put("onboardingComplete", prefs.isOnboardingComplete)
@@ -611,6 +612,7 @@ class FocusFineJavascriptInterface(
                 put("monitoredAppsCount", monitoredApps.size)
                 put("blockedNowCount", blockedNow.length())
                 put("blockedNowPackages", blockedNow)
+                put("recentEvents", DiagnosticsTimeline.snapshot(limit = 45))
             }.toString()
         }
     }

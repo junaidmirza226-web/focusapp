@@ -122,6 +122,7 @@ interface SupportDiagnostics {
   generatedAt: number;
   generatedAtReadable: string;
   appVersion: string;
+  currentProcessId?: number;
   androidSdk: number;
   deviceBrand: string;
   deviceModel: string;
@@ -142,6 +143,13 @@ interface SupportDiagnostics {
   monitoredAppsCount: number;
   blockedNowCount: number;
   blockedNowPackages: string[];
+  recentEvents?: Array<{
+    atMs: number;
+    atReadable: string;
+    source: string;
+    event: string;
+    details: string | null;
+  }>;
 }
 
 interface UnlockQuote {
@@ -1298,6 +1306,9 @@ const DashboardView = ({
             <div className="rounded-[1.4rem] border border-white/6 bg-black/25 px-4 py-4">
               <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">App build</p>
               <p className="mt-2 text-sm font-semibold text-white">{supportDiagnostics?.appVersion ?? 'Unknown'}</p>
+              {typeof supportDiagnostics?.currentProcessId === 'number' && (
+                <p className="mt-1 text-xs text-zinc-500">Process #{supportDiagnostics.currentProcessId}</p>
+              )}
             </div>
           </div>
 
@@ -1313,6 +1324,25 @@ const DashboardView = ({
               {supportCopyState === 'copied' ? <CheckCircle2 size={14} /> : supportCopyState === 'failed' ? <AlertTriangle size={14} /> : <ArrowRight size={14} />}
               {supportCopyState === 'copied' ? 'Bundle copied' : supportCopyState === 'failed' ? 'Copy failed' : 'Copy support bundle'}
             </button>
+          </div>
+
+          <div className="mt-5 rounded-[1.4rem] border border-white/6 bg-black/25 px-4 py-4">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Recent runtime events</p>
+            {supportDiagnostics?.recentEvents?.length ? (
+              <div className="mt-3 space-y-3">
+                {supportDiagnostics.recentEvents.slice(0, 6).map((event, index) => (
+                  <div key={`${event.atMs}-${index}`} className="rounded-xl border border-white/6 bg-zinc-900/60 px-3 py-2">
+                    <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">
+                      {event.source} · {event.atReadable}
+                    </p>
+                    <p className="mt-1 text-xs font-semibold text-zinc-100">{event.event}</p>
+                    {event.details && <p className="mt-1 text-xs text-zinc-400">{event.details}</p>}
+                  </div>
+                ))}
+              </div>
+            ) : (
+              <p className="mt-2 text-xs text-zinc-500">No runtime events captured yet. Refresh diagnostics after normal use.</p>
+            )}
           </div>
         </div>
 

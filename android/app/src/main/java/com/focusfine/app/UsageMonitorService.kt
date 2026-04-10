@@ -52,6 +52,8 @@ class UsageMonitorService : Service() {
 
     // Used to detect day changes and reset the "warned" flag in UserSettings
     private var lastTodayStart = 0L
+    // Full-policy scans are expensive; keep fast path focused on foreground/locked apps.
+    private var lastFullScanAt = 0L
     
     // The invincible floating lock view
     private var floatingLockView: View? = null
@@ -80,6 +82,7 @@ class UsageMonitorService : Service() {
         // Clear any existing callbacks before posting — prevents duplicate loops on re-start
         handler.removeCallbacks(monitorRunnable)
         handler.post(monitorRunnable)
+        DiagnosticsTimeline.record(source = TAG, event = "monitor_service_started")
         Log.d(TAG, "Service started")
         return START_STICKY
     }
@@ -144,6 +147,10 @@ class UsageMonitorService : Service() {
                 val enabledApps = db.userSettingsDao().getAllSettings().filter { it.isEnabled }
                 var anyAppLockedNow = false
                 var shouldShowFloatingLockFor: FloatingLockTarget? = null
+                val shouldRunFullScan = (now - lastFullScanAt) >= 10_000L
+                if (shouldRunFullScan) {
+                    lastFullScanAt = now
+                }
 
                 for (settings in enabledApps) {
                     val pkg = settings.packageName
@@ -151,6 +158,14 @@ class UsageMonitorService : Service() {
                     // Safety: Never lock or kill the timer app itself
                     if (pkg == packageName) {
                         lockedAppsThisSession.remove(pkg)
+                        continue
+                    }
+
+                    // Fast path every tick: current foreground app + apps already in a locked state.
+                    // Full scan still runs periodically for accounting/warnings across all apps.
+                    val shouldEvaluateNow =
+                        shouldRunFullScan || pkg == currentApp
+                    if (!shouldEvaluateNow) {
                         continue
                     }
 
@@ -285,7 +300,7 @@ class UsageMonitorService : Service() {
                 if (elapsed > 120L) {
                     Log.w(
                         TAG,
-                        "Monitor tick slow: ${elapsed}ms apps=${enabledApps.size} current=$currentApp"
+                        "Monitor tick slow: ${elapsed}ms apps=${enabledApps.size} current=$currentApp fullScan=$shouldRunFullScan"
                     )
                 }
               } catch (e: Exception) {
@@ -368,6 +383,11 @@ class UsageMonitorService : Service() {
             
             windowManager.addView(view, params)
             floatingLockView = view
+            DiagnosticsTimeline.record(
+                source = TAG,
+                event = "floating_overlay_deployed",
+                details = "pkg=${target.packageName} reason=${target.reason}"
+            )
             Log.d(
                 TAG,
                 "Invincible WindowManager lock deployed over ${target.appName} (${target.packageName}) reason=${target.reason}"
@@ -442,6 +462,7 @@ class UsageMonitorService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         Log.w(TAG, "App task removed; requesting monitor service restart")
+        DiagnosticsTimeline.record(source = TAG, event = "task_removed_restart_requested")
         try {
             ServiceRestartReceiver.schedule(
                 context = applicationContext,
@@ -468,6 +489,7 @@ class UsageMonitorService : Service() {
         FocusFineApp.preferences.lastServiceCheckTime = System.currentTimeMillis()
         if (FocusFineApp.preferences.isOnboardingComplete) {
             try {
+                DiagnosticsTimeline.record(source = TAG, event = "monitor_destroyed_restart_requested")
                 ServiceRestartReceiver.schedule(
                     context = applicationContext,
                     delayMs = 800L,
@@ -482,8 +504,14 @@ class UsageMonitorService : Service() {
                 Log.w(TAG, "Service destroyed unexpectedly; restart requested")
             } catch (e: Exception) {
                 Log.e(TAG, "Failed to self-heal after service destroy", e)
+                DiagnosticsTimeline.record(
+                    source = TAG,
+                    event = "monitor_destroyed_restart_failed",
+                    details = e.javaClass.simpleName
+                )
             }
         }
+        DiagnosticsTimeline.record(source = TAG, event = "monitor_service_destroyed")
         Log.d(TAG, "Service destroyed")
     }
 

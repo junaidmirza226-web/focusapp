@@ -169,6 +169,11 @@ class FocusFineAccessibilityService : AccessibilityService() {
         }
         ensureUsageMonitorServiceRunning()
         ActivationStateNotifier.broadcast(this)
+        DiagnosticsTimeline.record(
+            source = TAG,
+            event = "service_connected",
+            details = "onboardingComplete=${FocusFineApp.preferences.isOnboardingComplete}"
+        )
         Log.d(TAG, "Accessibility service connected")
     }
 
@@ -254,6 +259,7 @@ class FocusFineAccessibilityService : AccessibilityService() {
 
     override fun onInterrupt() {
         ActivationStateNotifier.broadcast(this)
+        DiagnosticsTimeline.record(source = TAG, event = "service_interrupted")
         Log.d(TAG, "Accessibility service interrupted")
     }
 
@@ -264,6 +270,7 @@ class FocusFineAccessibilityService : AccessibilityService() {
         }
         serviceScope.cancel()
         ActivationStateNotifier.broadcast(this)
+        DiagnosticsTimeline.record(source = TAG, event = "service_destroyed")
     }
 
     private suspend fun evaluateBlockingState(
@@ -339,9 +346,15 @@ class FocusFineAccessibilityService : AccessibilityService() {
             } else {
                 startService(intent)
             }
+            DiagnosticsTimeline.record(source = TAG, event = "monitor_start_requested_from_a11y")
             Log.d(TAG, "Requested UsageMonitorService start from accessibility binding")
         } catch (t: Throwable) {
             hasAttemptedMonitorStart = false
+            DiagnosticsTimeline.record(
+                source = TAG,
+                event = "monitor_start_failed_from_a11y",
+                details = t.javaClass.simpleName
+            )
             Log.w(TAG, "Unable to start UsageMonitorService from accessibility binding", t)
         }
     }
@@ -368,6 +381,11 @@ class FocusFineAccessibilityService : AccessibilityService() {
             TAG,
             "Blocking $packageName ($appName) reason=$reason latency=${latencyMs}ms blockEndsAt=${blockEndsAt ?: -1L}"
         )
+        DiagnosticsTimeline.record(
+            source = TAG,
+            event = "redirect_to_overlay",
+            details = "pkg=$packageName reason=$reason latencyMs=$latencyMs"
+        )
         val intent = Intent(this, OverlayActivity::class.java).apply {
             addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
@@ -386,6 +404,11 @@ class FocusFineAccessibilityService : AccessibilityService() {
             startActivity(intent)
         } catch (t: Throwable) {
             Log.e(TAG, "Failed to launch lock screen; falling back to Home", t)
+            DiagnosticsTimeline.record(
+                source = TAG,
+                event = "overlay_launch_failed_fallback_home",
+                details = t.javaClass.simpleName
+            )
             performGlobalAction(GLOBAL_ACTION_HOME)
         }
     }

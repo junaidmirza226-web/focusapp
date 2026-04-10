@@ -95,6 +95,12 @@ class MainActivity : AppCompatActivity() {
             "Android"
         )
 
+        DiagnosticsTimeline.record(
+            source = TAG,
+            event = "activity_created",
+            details = "onboardingComplete=${FocusFineApp.preferences.isOnboardingComplete}"
+        )
+
         webView.loadUrl("file:///android_asset/index.html")
     }
 
@@ -117,6 +123,11 @@ class MainActivity : AppCompatActivity() {
         super.onResume()
         webView.onResume()
         webView.resumeTimers()
+        DiagnosticsTimeline.record(
+            source = TAG,
+            event = "activity_resumed",
+            details = "corePerms=${hasCorePermissions()} onboardingComplete=${FocusFineApp.preferences.isOnboardingComplete}"
+        )
         refreshProtectionState()
         scheduleActivationPulses()
     }
@@ -241,6 +252,11 @@ class MainActivity : AppCompatActivity() {
 
     fun ensureMonitoringServiceIfEligible(): Boolean {
         if (!FocusFineApp.preferences.isOnboardingComplete || !hasCorePermissions()) {
+            DiagnosticsTimeline.record(
+                source = TAG,
+                event = "monitor_start_skipped",
+                details = "onboardingComplete=${FocusFineApp.preferences.isOnboardingComplete} corePerms=${hasCorePermissions()}"
+            )
             return false
         }
         val serviceIntent = Intent(this, UsageMonitorService::class.java)
@@ -250,9 +266,15 @@ class MainActivity : AppCompatActivity() {
             } else {
                 startService(serviceIntent)
             }
+            DiagnosticsTimeline.record(source = TAG, event = "monitor_start_requested")
             true
         } catch (t: Throwable) {
             Log.w(TAG, "Failed to ensure UsageMonitorService is active", t)
+            DiagnosticsTimeline.record(
+                source = TAG,
+                event = "monitor_start_failed",
+                details = t.javaClass.simpleName
+            )
             false
         }
     }
@@ -280,6 +302,7 @@ class MainActivity : AppCompatActivity() {
             webView.goBack()
         } else {
             // Go home — keep the monitoring service alive rather than closing the app
+            DiagnosticsTimeline.record(source = TAG, event = "back_pressed_to_home")
             startActivity(
                 Intent(Intent.ACTION_MAIN).addCategory(Intent.CATEGORY_HOME)
             )

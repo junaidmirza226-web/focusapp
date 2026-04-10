@@ -14,6 +14,11 @@ class BootReceiver : BroadcastReceiver() {
             action == Intent.ACTION_MY_PACKAGE_REPLACED) {
             
             Log.d("BootReceiver", "Boot broadcast received: $action")
+            DiagnosticsTimeline.record(
+                source = "BootReceiver",
+                event = "boot_broadcast_received",
+                details = action ?: "unknown"
+            )
             
             // If onboarding is not complete, do not start the service automatically
             if (!FocusFineApp.preferences.isOnboardingComplete) return
@@ -25,9 +30,15 @@ class BootReceiver : BroadcastReceiver() {
                 } else {
                     context.startService(serviceIntent)
                 }
+                DiagnosticsTimeline.record(source = "BootReceiver", event = "monitor_start_requested_on_boot")
                 Log.d("BootReceiver", "FocusFine UsageMonitorService auto-restarted.")
             } catch (e: Exception) {
                 Log.e("BootReceiver", "Failed to start service on boot", e)
+                DiagnosticsTimeline.record(
+                    source = "BootReceiver",
+                    event = "monitor_start_failed_on_boot",
+                    details = e.javaClass.simpleName
+                )
             }
         }
     }

@@ -34,6 +34,11 @@ class FocusFineApp : Application() {
         database = AppDatabase.getInstance(this)
         preferences = UserPreferences(this)
         createNotificationChannels()
+        DiagnosticsTimeline.record(
+            source = "FocusFineApp",
+            event = "process_initialized",
+            details = "onboardingComplete=${preferences.isOnboardingComplete}"
+        )
     }
 
     private fun createNotificationChannels() {
