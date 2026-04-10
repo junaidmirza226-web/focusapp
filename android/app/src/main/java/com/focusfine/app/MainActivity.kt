@@ -1,15 +1,22 @@
 package com.focusfine.app
 
 import android.app.AppOpsManager
+import android.content.BroadcastReceiver
 import android.content.Context
 import android.content.Intent
+import android.content.IntentFilter
 import android.content.pm.PackageManager
+import android.graphics.Color
 import android.os.Build
 import android.os.Bundle
 import android.os.Process
+import android.os.SystemClock
 import android.provider.Settings
+import android.util.Log
+import android.view.View
 import android.view.accessibility.AccessibilityManager
 import android.webkit.WebView
+import android.webkit.WebViewClient
 import android.widget.Toast
 import androidx.appcompat.app.AppCompatActivity
 import androidx.core.app.ActivityCompat
@@ -19,19 +26,51 @@ import androidx.core.splashscreen.SplashScreen.Companion.installSplashScreen
 class MainActivity : AppCompatActivity() {
 
     companion object {
+        private const val TAG = "MainActivity"
         private const val USAGE_ACCESS_PERMISSION_CODE = 100
         private const val OVERLAY_PERMISSION_CODE = 101
         private const val NOTIFICATION_PERMISSION_CODE = 102
         private const val ACCESSIBILITY_PERMISSION_CODE = 103
     }
 
+    private lateinit var webView: WebView
+    private lateinit var loadingOverlay: View
+    @Volatile
+    private var isWebAppReady = false
+    @Volatile
+    private var isPageContentVisible = false
+    private var splashDeadlineElapsed = 0L
+    private var activationPulseIndex = 0
+    private val activationPulseScheduleMs = longArrayOf(0L, 900L, 2200L, 4200L)
+    private val activationPulseRunnable = object : Runnable {
+        override fun run() {
+            announceActivationStateChanged()
+            activationPulseIndex += 1
+            if (activationPulseIndex >= activationPulseScheduleMs.size) return
+
+            val previousAt = activationPulseScheduleMs[activationPulseIndex - 1]
+            val nextAt = activationPulseScheduleMs[activationPulseIndex]
+            webView.postDelayed(this, (nextAt - previousAt).coerceAtLeast(0L))
+        }
+    }
+    private val activationStateReceiver = object : BroadcastReceiver() {
+        override fun onReceive(context: Context?, intent: Intent?) {
+            scheduleActivationPulses()
+        }
+    }
+
     override fun onCreate(savedInstanceState: Bundle?) {
         // Install the splash screen before super.onCreate so it shows immediately
-        installSplashScreen()
+        splashDeadlineElapsed = SystemClock.elapsedRealtime() + 8_000L
+        installSplashScreen().setKeepOnScreenCondition {
+            !isWebAppReady && SystemClock.elapsedRealtime() < splashDeadlineElapsed
+        }
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
 
-        val webView = findViewById<WebView>(R.id.webview)
+        webView = findViewById(R.id.webview)
+        loadingOverlay = findViewById(R.id.loading_overlay)
+        webView.alpha = 0f
         webView.settings.apply {
             javaScriptEnabled = true
             domStorageEnabled = true
@@ -39,6 +78,15 @@ class MainActivity : AppCompatActivity() {
             allowContentAccess = true
             @Suppress("SetJavaScriptEnabled")
             allowFileAccessFromFileURLs = true
+        }
+        webView.setBackgroundColor(Color.BLACK)
+        webView.webViewClient = object : WebViewClient() {
+            override fun onPageCommitVisible(view: WebView?, url: String?) {
+                super.onPageCommitVisible(view, url)
+                Log.d(TAG, "WebView content committed: $url")
+                isPageContentVisible = true
+                revealWebAppIfReady()
+            }
         }
 
         // Register the JavaScript bridge — React calls window.Android.*
@@ -50,37 +98,60 @@ class MainActivity : AppCompatActivity() {
         webView.loadUrl("file:///android_asset/index.html")
     }
 
-    override fun onResume() {
-        super.onResume()
-        checkPermissionsAndProceed()
+    fun markWebAppReady() {
+        isWebAppReady = true
+        Log.d(TAG, "Web app reported ready")
+        revealWebAppIfReady()
     }
 
-    private fun checkPermissionsAndProceed() {
+    private fun revealWebAppIfReady() {
+        if (!::webView.isInitialized || !::loadingOverlay.isInitialized) return
+        if (!isWebAppReady || !isPageContentVisible) return
+        runOnUiThread {
+            webView.alpha = 1f
+            loadingOverlay.visibility = View.GONE
+        }
+    }
+
+    override fun onResume() {
+        super.onResume()
+        webView.onResume()
+        webView.resumeTimers()
+        refreshProtectionState()
+        scheduleActivationPulses()
+    }
+
+    override fun onStart() {
+        super.onStart()
+        val filter = IntentFilter(ActivationStateNotifier.ACTION)
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            registerReceiver(activationStateReceiver, filter, RECEIVER_NOT_EXPORTED)
+        } else {
+            @Suppress("DEPRECATION")
+            registerReceiver(activationStateReceiver, filter)
+        }
+    }
+
+    override fun onPause() {
+        if (::webView.isInitialized) {
+            webView.removeCallbacks(activationPulseRunnable)
+        }
+        webView.onPause()
+        webView.pauseTimers()
+        super.onPause()
+    }
+
+    override fun onStop() {
+        runCatching {
+            unregisterReceiver(activationStateReceiver)
+        }
+        super.onStop()
+    }
+
+    private fun refreshProtectionState() {
         val onboardingComplete = FocusFineApp.preferences.isOnboardingComplete
-        val hasCorePermissions =
-            hasUsageAccessPermission() &&
-            hasOverlayPermissionGranted() &&
-            hasAccessibilityServiceEnabled()
-
-        if (onboardingComplete && hasCorePermissions) {
-            startMonitoringServiceIfNeeded()
-            return
-        }
-
-        if (onboardingComplete && !hasCorePermissions) {
-            FocusFineApp.preferences.isOnboardingComplete = false
-        }
-
-        when {
-            !hasUsageAccessPermission() -> requestUsageAccessPermission()
-            !hasOverlayPermissionGranted() -> requestOverlayPermission()
-            !hasNotificationPermission() -> requestNotificationPermission()
-            !hasAccessibilityServiceEnabled() -> requestAccessibilityService()
-            else -> {
-                FocusFineApp.preferences.isOnboardingComplete = true
-                startMonitoringServiceIfNeeded()
-                Toast.makeText(this, "FocusFine is now active!", Toast.LENGTH_SHORT).show()
-            }
+        if (onboardingComplete && hasCorePermissions()) {
+            ensureMonitoringServiceIfEligible()
         }
     }
 
@@ -151,7 +222,10 @@ class MainActivity : AppCompatActivity() {
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<out String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
-        if (requestCode == NOTIFICATION_PERMISSION_CODE) checkPermissionsAndProceed()
+        if (requestCode == NOTIFICATION_PERMISSION_CODE) {
+            refreshProtectionState()
+            announceActivationStateChanged()
+        }
     }
 
     override fun onActivityResult(requestCode: Int, resultCode: Int, data: Intent?) {
@@ -159,15 +233,49 @@ class MainActivity : AppCompatActivity() {
         // onResume fires automatically after returning from settings, continuing the permission sequence
     }
 
-    private fun startMonitoringServiceIfNeeded() {
+    fun hasCorePermissions(): Boolean {
+        return hasUsageAccessPermission() &&
+            hasOverlayPermissionGranted() &&
+            hasAccessibilityServiceEnabled()
+    }
+
+    fun ensureMonitoringServiceIfEligible(): Boolean {
+        if (!FocusFineApp.preferences.isOnboardingComplete || !hasCorePermissions()) {
+            return false
+        }
         val serviceIntent = Intent(this, UsageMonitorService::class.java)
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) startForegroundService(serviceIntent)
-        else startService(serviceIntent)
+        return try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(serviceIntent)
+            } else {
+                startService(serviceIntent)
+            }
+            true
+        } catch (t: Throwable) {
+            Log.w(TAG, "Failed to ensure UsageMonitorService is active", t)
+            false
+        }
+    }
+
+    private fun announceActivationStateChanged() {
+        if (!::webView.isInitialized) return
+        webView.post {
+            webView.evaluateJavascript(
+                "window.dispatchEvent(new Event('focusfine:activation'));",
+                null
+            )
+        }
+    }
+
+    private fun scheduleActivationPulses() {
+        if (!::webView.isInitialized) return
+        webView.removeCallbacks(activationPulseRunnable)
+        activationPulseIndex = 0
+        webView.post(activationPulseRunnable)
     }
 
     @Deprecated("Deprecated in Java")
     override fun onBackPressed() {
-        val webView = findViewById<WebView>(R.id.webview)
         if (webView.canGoBack()) {
             webView.goBack()
         } else {

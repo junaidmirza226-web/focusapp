@@ -1,26 +1,34 @@
-import React, { useState, useEffect, useCallback } from 'react';
-import { 
-  Smartphone, 
-  ShieldCheck, 
-  Zap, 
-  BarChart3, 
-  Award, 
-  TrendingUp, 
-  Clock, 
-  CheckCircle2, 
-  Plus, 
-  X, 
-  ArrowRight, 
-  Loader 
+import React, {useCallback, useEffect, useMemo, useState} from 'react';
+import {
+  AlertTriangle,
+  ArrowLeft,
+  ArrowRight,
+  Award,
+  BarChart3,
+  CheckCircle2,
+  ChevronRight,
+  Clock3,
+  Loader,
+  Lock,
+  PencilLine,
+  Plus,
+  Search,
+  ShieldAlert,
+  ShieldCheck,
+  Smartphone,
+  TrendingUp,
+  Wrench,
+  X,
+  Zap,
 } from 'lucide-react';
-import { motion, AnimatePresence } from 'motion/react';
-
-// ── Types ─────────────────────────────────────────────────────────────────────
+import {AnimatePresence, motion} from 'motion/react';
 
 declare global {
   interface Window {
     Android?: {
       isPermissionsGranted: () => string;
+      getActivationState?: () => string;
+      ensureMonitoringService?: () => boolean;
       getMonitoredApps: () => string;
       getAppPolicies?: () => string;
       getInstalledApps: () => string;
@@ -28,7 +36,7 @@ declare global {
       saveApp: (pkg: string, limit: number, name: string) => void;
       saveAppPolicy?: (policyJson: string) => boolean;
       setTimeBlockRules?: (pkg: string, rulesJson: string) => boolean;
-      removeApp: (pkg: string) => void;
+      removeApp: (pkg: string) => boolean;
       getTodayUsage: () => string;
       getDashboardStats: () => string;
       getWeeklyStats: () => string;
@@ -39,18 +47,32 @@ declare global {
       requestAccessibilityService: () => void;
       requestBatteryOptimization: () => void;
       setOnboardingComplete: (complete: boolean) => void;
+      notifyWebAppReady?: () => void;
     };
   }
 }
 
-type AppState = 'loading' | 'onboarding' | 'setup' | 'dashboard';
+type AppState = 'loading' | 'onboarding' | 'setup' | 'dashboard' | 'repair';
+type WorkspaceMode = 'initial' | 'manage';
 type PolicyMode = 'USAGE_ONLY' | 'TIME_ONLY' | 'COMBINED';
+type BlockReason = 'USAGE_LIMIT' | 'TIME_BLOCK' | null;
 
 type PermissionsState = {
   usageAccess: boolean;
   overlay: boolean;
   accessibility: boolean;
 };
+
+interface ActivationState extends PermissionsState {
+  onboardingComplete: boolean;
+  hasCorePermissions: boolean;
+  monitoringServiceRunning: boolean;
+  monitoringServiceHealthy: boolean;
+  lastServiceCheckTime: number;
+  heartbeatAgeMs: number | null;
+  needsRepair: boolean;
+  strictMode: boolean;
+}
 
 interface TimeRule {
   dayOfWeek: number;
@@ -59,26 +81,24 @@ interface TimeRule {
   isEnabled: boolean;
 }
 
-interface InstalledApp {
+interface BlockState {
+  blocked: boolean;
+  reason: BlockReason;
+  blockEndsAt: number | null;
+}
+
+interface PolicyApp {
   packageName: string;
   appName: string;
   limitMinutes: number;
   isSelected: boolean;
+  persisted: boolean;
   enforcementMode: PolicyMode;
   usageLimitEnabled: boolean;
   timeBlockEnabled: boolean;
   timeRules: TimeRule[];
-}
-
-interface MonitoredApp {
-  packageName: string;
-  appName: string;
-  dailyLimitMinutes: number;
   usedMinutes: number;
-  enforcementMode: PolicyMode;
-  usageLimitEnabled: boolean;
-  timeBlockEnabled: boolean;
-  timeRules: TimeRule[];
+  blockState: BlockState | null;
 }
 
 interface DashboardStats {
@@ -96,63 +116,33 @@ interface WeeklyStatDay {
   totalSpent: number;
 }
 
-// ── Constants ─────────────────────────────────────────────────────────────────
-
 const DEFAULT_STATS: DashboardStats = {
   focusScore: 0,
   scoreDiffVsYesterday: 0,
-  totalSpentToday: 0.0,
-  totalSpentThisWeek: 0.0,
+  totalSpentToday: 0,
+  totalSpentThisWeek: 0,
   timeSavedMinutes: 0,
   streakDays: 0,
-  strictMode: false
+  strictMode: false,
 };
 
 const DEFAULT_PERMS: PermissionsState = {
   usageAccess: false,
   overlay: false,
-  accessibility: false
+  accessibility: false,
 };
 
-const getFirstIncompleteOnboardingStep = (perms: PermissionsState) => {
-  if (!perms.usageAccess) return 1;
-  if (!perms.overlay) return 2;
-  if (!perms.accessibility) return 3;
-  return 4;
+const DEFAULT_ACTIVATION: ActivationState = {
+  ...DEFAULT_PERMS,
+  onboardingComplete: false,
+  hasCorePermissions: false,
+  monitoringServiceRunning: false,
+  monitoringServiceHealthy: false,
+  lastServiceCheckTime: 0,
+  heartbeatAgeMs: null,
+  needsRepair: false,
+  strictMode: false,
 };
-
-const DEMO_INSTALLED: InstalledApp[] = [
-  {
-    packageName: 'com.android.chrome',
-    appName: 'Chrome',
-    limitMinutes: 30,
-    isSelected: false,
-    enforcementMode: 'COMBINED',
-    usageLimitEnabled: true,
-    timeBlockEnabled: true,
-    timeRules: [{ dayOfWeek: 1, startMinuteOfDay: 21 * 60, endMinuteOfDay: 9 * 60, isEnabled: true }],
-  },
-  {
-    packageName: 'com.instagram.android',
-    appName: 'Instagram',
-    limitMinutes: 45,
-    isSelected: false,
-    enforcementMode: 'COMBINED',
-    usageLimitEnabled: true,
-    timeBlockEnabled: true,
-    timeRules: [{ dayOfWeek: 1, startMinuteOfDay: 21 * 60, endMinuteOfDay: 9 * 60, isEnabled: true }],
-  },
-  {
-    packageName: 'com.zhiliaoapp.musically',
-    appName: 'TikTok',
-    limitMinutes: 60,
-    isSelected: false,
-    enforcementMode: 'COMBINED',
-    usageLimitEnabled: true,
-    timeBlockEnabled: true,
-    timeRules: [{ dayOfWeek: 1, startMinuteOfDay: 21 * 60, endMinuteOfDay: 9 * 60, isEnabled: true }],
-  },
-];
 
 const DEFAULT_WEEKLY_RULES: TimeRule[] = [1, 2, 3, 4, 5, 6, 7].map(day => ({
   dayOfWeek: day,
@@ -161,8 +151,59 @@ const DEFAULT_WEEKLY_RULES: TimeRule[] = [1, 2, 3, 4, 5, 6, 7].map(day => ({
   isEnabled: true,
 }));
 
+const DEMO_INSTALLED: PolicyApp[] = [
+  {
+    packageName: 'com.android.chrome',
+    appName: 'Chrome',
+    limitMinutes: 30,
+    isSelected: false,
+    persisted: false,
+    enforcementMode: 'COMBINED',
+    usageLimitEnabled: true,
+    timeBlockEnabled: true,
+    timeRules: DEFAULT_WEEKLY_RULES,
+    usedMinutes: 0,
+    blockState: null,
+  },
+  {
+    packageName: 'com.android.calculator2',
+    appName: 'Calculator',
+    limitMinutes: 20,
+    isSelected: false,
+    persisted: false,
+    enforcementMode: 'USAGE_ONLY',
+    usageLimitEnabled: true,
+    timeBlockEnabled: false,
+    timeRules: [],
+    usedMinutes: 0,
+    blockState: null,
+  },
+  {
+    packageName: 'com.google.android.calendar',
+    appName: 'Calendar',
+    limitMinutes: 25,
+    isSelected: false,
+    persisted: false,
+    enforcementMode: 'TIME_ONLY',
+    usageLimitEnabled: false,
+    timeBlockEnabled: true,
+    timeRules: DEFAULT_WEEKLY_RULES,
+    usedMinutes: 0,
+    blockState: null,
+  },
+];
+
+const getFirstIncompleteOnboardingStep = (perms: PermissionsState) => {
+  if (!perms.usageAccess) return 1;
+  if (!perms.overlay) return 2;
+  if (!perms.accessibility) return 3;
+  return 4;
+};
+
 const toTimeInput = (minutes: number) => {
-  const h = Math.floor(minutes / 60).toString().padStart(2, '0');
+  const h = Math.floor(minutes / 60)
+    .toString()
+    .padStart(2, '0');
   const m = (minutes % 60).toString().padStart(2, '0');
   return `${h}:${m}`;
 };
@@ -173,19 +214,83 @@ const fromTimeInput = (value: string) => {
   return Math.max(0, Math.min(23 * 60 + 59, h * 60 + m));
 };
 
-// ── Components ────────────────────────────────────────────────────────────────
+const formatClockTime = (minutes: number) => {
+  const hours = Math.floor(minutes / 60);
+  const mins = minutes % 60;
+  const suffix = hours >= 12 ? 'PM' : 'AM';
+  const hour12 = hours % 12 || 12;
+  return `${hour12}:${mins.toString().padStart(2, '0')} ${suffix}`;
+};
 
-const Button = ({ 
-  children, 
-  onClick, 
-  disabled = false, 
-  className = '', 
-  ariaLabel 
-}: { 
-  children: React.ReactNode; 
-  onClick?: () => void; 
-  disabled?: boolean; 
-  className?: string; 
+const formatScheduleSummary = (rules: TimeRule[]) => {
+  const activeRule = rules.find(rule => rule.isEnabled) ?? rules[0];
+  if (!activeRule) return 'No schedule';
+  return `${formatClockTime(activeRule.startMinuteOfDay)} to ${formatClockTime(activeRule.endMinuteOfDay)} every day`;
+};
+
+const formatBlockState = (blockState: BlockState | null) => {
+  if (!blockState?.blocked) return 'Protection ready';
+  if (blockState.reason === 'TIME_BLOCK') {
+    if (blockState.blockEndsAt) {
+      const reopenAt = new Date(blockState.blockEndsAt).toLocaleTimeString([], {
+        hour: 'numeric',
+        minute: '2-digit',
+      });
+      return `Blocked by schedule until ${reopenAt}`;
+    }
+    return 'Blocked by schedule';
+  }
+  return 'Daily allowance exhausted';
+};
+
+const formatHeartbeat = (heartbeatAgeMs: number | null) => {
+  if (heartbeatAgeMs == null) return 'No heartbeat yet';
+  if (heartbeatAgeMs < 2_000) return 'Just now';
+  if (heartbeatAgeMs < 60_000) return `${Math.round(heartbeatAgeMs / 1000)}s ago`;
+  return `${Math.round(heartbeatAgeMs / 60_000)}m ago`;
+};
+
+const scrollFieldIntoView = (target: HTMLElement) => {
+  window.setTimeout(() => {
+    target.scrollIntoView({behavior: 'smooth', block: 'center'});
+  }, 120);
+};
+
+const useKeyboardInset = () => {
+  const [keyboardInset, setKeyboardInset] = useState(0);
+
+  useEffect(() => {
+    const viewport = window.visualViewport;
+    if (!viewport) return;
+
+    const handleResize = () => {
+      const inset = Math.max(0, window.innerHeight - viewport.height - viewport.offsetTop);
+      setKeyboardInset(inset > 120 ? inset : 0);
+    };
+
+    handleResize();
+    viewport.addEventListener('resize', handleResize);
+    viewport.addEventListener('scroll', handleResize);
+    return () => {
+      viewport.removeEventListener('resize', handleResize);
+      viewport.removeEventListener('scroll', handleResize);
+    };
+  }, []);
+
+  return keyboardInset;
+};
+
+const Button = ({
+  children,
+  onClick,
+  disabled = false,
+  className = '',
+  ariaLabel,
+}: {
+  children: React.ReactNode;
+  onClick?: () => void;
+  disabled?: boolean;
+  className?: string;
   ariaLabel?: string;
 }) => (
   <button
@@ -193,13 +298,12 @@ const Button = ({
     disabled={disabled}
     aria-label={ariaLabel}
     title={ariaLabel}
-    className={`px-8 py-4 rounded-full font-bold transition-all active:scale-95 disabled:opacity-30 disabled:pointer-events-none bg-white text-black hover:bg-zinc-200 ${className}`}
-  >
+    className={`rounded-[1.6rem] px-6 py-4 font-bold transition-all active:scale-[0.98] disabled:pointer-events-none disabled:opacity-40 ${className}`}>
     {children}
   </button>
 );
 
-const AppIcon = ({ packageName, appName }: { packageName: string; appName: string }) => {
+const AppIcon = ({packageName, appName}: {packageName: string; appName: string}) => {
   const [icon, setIcon] = useState<string | null>(null);
 
   useEffect(() => {
@@ -209,205 +313,218 @@ const AppIcon = ({ packageName, appName }: { packageName: string; appName: strin
   }, [packageName]);
 
   return (
-    <div className="w-12 h-12 rounded-2xl bg-zinc-800 flex items-center justify-center overflow-hidden shadow-lg border border-white/5">
-      {icon ? (
-        <img src={icon} alt={appName} className="w-full h-full object-cover" />
-      ) : (
-        <Smartphone className="text-zinc-600" size={24} />
-      )}
+    <div className="flex h-12 w-12 items-center justify-center overflow-hidden rounded-[1.1rem] border border-white/8 bg-zinc-900 shadow-lg">
+      {icon ? <img src={icon} alt={appName} className="h-full w-full object-cover" /> : <Smartphone size={22} className="text-zinc-500" />}
     </div>
   );
 };
 
-const StreakCard = ({ days }: { days: number }) => {
-  const next = days < 3 ? 3 : days < 7 ? 7 : days + 1;
+const StreakCard = ({days}: {days: number}) => {
+  const nextMilestone = days < 3 ? 3 : days < 7 ? 7 : days + 1;
+
   return (
-    <div className="p-8 rounded-[2.5rem] bg-gradient-to-br from-zinc-900 to-black border border-white/5 shadow-2xl mb-8 relative overflow-hidden group">
-      <div className="absolute top-0 right-0 w-32 h-32 bg-orange-500/10 rounded-full blur-[50px] -mr-16 -mt-16 group-hover:bg-orange-500/20 transition-all duration-700" />
-      <div className="flex items-center justify-between">
+    <div className="relative mb-8 overflow-hidden rounded-[2.3rem] border border-white/6 bg-gradient-to-br from-zinc-950 via-zinc-900 to-black p-8 shadow-2xl">
+      <div className="absolute -right-10 -top-10 h-40 w-40 rounded-full bg-amber-500/10 blur-3xl" />
+      <div className="relative flex items-start justify-between gap-4">
         <div>
-          <h3 className="font-bold flex items-center gap-2 mb-2 text-white font-outfit">
-            <Award size={18} className="text-orange-400" /> Perfect Tracking
-          </h3>
-          <p className="text-4xl font-black text-orange-400 text-glow font-outfit">{days} day{days !== 1 ? 's' : ''}</p>
-          <p className="text-sm text-zinc-400 mt-1">
-            {days === 0 ? 'Start today — stay under all limits!' : `Next milestone: ${next} days 🎯`}
+          <p className="mb-2 flex items-center gap-2 text-sm font-bold uppercase tracking-[0.18em] text-amber-300/80">
+            <Award size={16} /> Consistency streak
+          </p>
+          <p className="text-5xl font-black text-white">{days}</p>
+          <p className="mt-2 text-sm text-zinc-400">
+            {days === 0 ? 'Start today. One clean day gives you momentum.' : `Next milestone: ${nextMilestone} days.`}
           </p>
         </div>
-        <motion.div 
-          animate={{ y: [0, -5, 0] }} 
-          transition={{ duration: 3, repeat: Infinity, ease: "easeInOut" }}
-          className="text-5xl drop-shadow-[0_0_15px_rgba(249,115,22,0.5)]">
-          {days >= 7 ? '🔥' : days >= 3 ? '⚡' : '🌱'}
-        </motion.div>
+        <div className="rounded-[1.5rem] border border-white/8 bg-white/4 px-4 py-3 text-right">
+          <p className="text-[11px] font-bold uppercase tracking-[0.18em] text-zinc-500">Status</p>
+          <p className="mt-1 text-sm font-semibold text-white">{days >= 7 ? 'Locked in' : days >= 3 ? 'Building' : 'Starting strong'}</p>
+        </div>
       </div>
     </div>
   );
 };
 
-const WeeklyTrend = ({ data }: { data: WeeklyStatDay[] }) => {
+const WeeklyTrend = ({data}: {data: WeeklyStatDay[]}) => {
   const days = ['Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat', 'Sun'];
-  const scores = data.length === 7 ? data.map(d => d.focusScore) : [72, 68, 75, 74, 79, 82, 84];
-  const hasRealData = data.length === 7 && data.some(d => d.focusScore > 0);
+  const scores = data.length === 7 ? data.map(day => day.focusScore) : [72, 68, 75, 78, 80, 84, 82];
+  const hasRealData = data.length === 7 && data.some(day => day.focusScore > 0);
 
   return (
-    <div className="mb-8 p-6 rounded-[2rem] glass-card">
-      <h3 className="font-bold mb-6 flex items-center gap-2 text-white font-outfit">
-        <TrendingUp size={18} className="text-emerald-400" /> Weekly Trend
-        {!hasRealData && <span className="text-xs text-zinc-500 font-normal ml-auto">Sample data</span>}
-      </h3>
-      <div className="flex items-end justify-between h-32 gap-3">
-        {days.map((day, i) => {
-          const isHigh = scores[i] >= 80;
+    <div className="rounded-[2.3rem] border border-white/6 bg-zinc-950/80 p-6 shadow-2xl">
+      <div className="mb-6 flex items-center gap-2 text-white">
+        <TrendingUp size={18} className="text-emerald-400" />
+        <h3 className="font-bold">Weekly trend</h3>
+        {!hasRealData && <span className="ml-auto text-xs uppercase tracking-[0.18em] text-zinc-500">Sample</span>}
+      </div>
+      <div className="flex h-32 items-end justify-between gap-3">
+        {days.map((day, index) => {
+          const isHigh = scores[index] >= 80;
           return (
-            <div key={day} className="flex flex-col items-center flex-1">
+            <div key={day} className="flex flex-1 flex-col items-center">
               <motion.div
-                initial={{ height: 0 }}
-                animate={{ height: `${(scores[i] / 100) * 128}px` }}
-                transition={{ delay: i * 0.1, type: 'spring', damping: 15 }}
-                className={`w-full rounded-t-lg ${scores[i] > 0 ? (isHigh ? 'bg-gradient-to-t from-emerald-600/50 to-emerald-400 glow-ring' : 'bg-gradient-to-t from-zinc-700/50 to-zinc-500') : 'bg-zinc-800'}`}
+                initial={{height: 0}}
+                animate={{height: `${(scores[index] / 100) * 128}px`}}
+                transition={{delay: index * 0.08, type: 'spring', damping: 18}}
+                className={`w-full rounded-t-xl ${scores[index] > 0 ? (isHigh ? 'bg-gradient-to-t from-emerald-500/50 to-emerald-300' : 'bg-gradient-to-t from-zinc-700 to-zinc-500') : 'bg-zinc-900'}`}
               />
-              <span className="text-[10px] text-zinc-500 mt-3 font-semibold uppercase tracking-wider">{day}</span>
+              <span className="mt-3 text-[10px] font-semibold uppercase tracking-[0.18em] text-zinc-500">{day}</span>
             </div>
-          )
+          );
         })}
       </div>
     </div>
   );
 };
 
-// ── Sub-Views ───────────────────────────────────────────────────────────────
-
-const OnboardingView = ({ 
-  onboardingStep, 
-  setOnboardingStep, 
-  setStep, 
-  perms, 
-  refreshPerms 
-}: { 
-  onboardingStep: number, 
-  setOnboardingStep: React.Dispatch<React.SetStateAction<number>>, 
-  setStep: React.Dispatch<React.SetStateAction<AppState>>,
-  perms: PermissionsState,
-  refreshPerms: () => void
+const OnboardingView = ({
+  onboardingStep,
+  setOnboardingStep,
+  setStep,
+  perms,
+  refreshActivation,
+}: {
+  onboardingStep: number;
+  setOnboardingStep: React.Dispatch<React.SetStateAction<number>>;
+  setStep: React.Dispatch<React.SetStateAction<AppState>>;
+  perms: PermissionsState;
+  refreshActivation: () => ActivationState | null;
 }) => {
   const steps = [
-    { title: 'Extreme Focus.', description: 'Block distractions and reclaim your time. Set hard limits that give you back control over your attention.', icon: <Smartphone className="text-white drop-shadow-[0_0_15px_rgba(255,255,255,0.8)]" size={48} /> },
-    { 
-      title: 'Usage Access', 
-      description: 'Grant access so FocusFine can accurately track and block the apps that drain your productivity.', 
-      icon: <BarChart3 className="text-emerald-400 drop-shadow-[0_0_15px_rgba(52,211,153,0.8)]" size={48} />, 
-      permission: perms.usageAccess ? 'Usage Access Granted' : 'Enable Usage Access', 
-      isGranted: perms.usageAccess,
-      action: () => window.Android?.requestUsageAccess(),
-      requiresGrant: true
-    },
-    { 
-      title: 'Ironclad Lock', 
-      description: 'Allow us to overlay the lock screen over distractive apps instantly. No way back until the timer hits zero.', 
-      icon: <ShieldCheck className="text-blue-400 drop-shadow-[0_0_15px_rgba(96,165,250,0.8)]" size={48} />, 
-      permission: perms.overlay ? 'Overlay Granted' : 'Enable Lock Screen', 
-      isGranted: perms.overlay,
-      action: () => window.Android?.requestOverlay(),
-      requiresGrant: true
+    {
+      title: 'Own your attention',
+      description: 'Build a wall between impulse and action. FocusFine makes distraction expensive again.',
+      icon: <Zap className="text-white" size={48} />,
     },
     {
-      title: 'App Switch Guard',
-      description: 'Enable the Accessibility service so FocusFine can instantly intercept selected apps the moment you open them after the limit is hit.',
-      icon: <ShieldCheck className="text-rose-400 drop-shadow-[0_0_15px_rgba(251,113,133,0.8)]" size={48} />,
-      permission: perms.accessibility ? 'Accessibility Granted' : 'Enable App Blocking',
+      title: 'See every minute',
+      description: 'Usage access lets FocusFine measure exactly when a distracting app steals your time.',
+      icon: <BarChart3 className="text-emerald-400" size={48} />,
+      permission: perms.usageAccess ? 'Usage access granted' : 'Enable usage access',
+      isGranted: perms.usageAccess,
+      action: () => window.Android?.requestUsageAccess(),
+      requiresGrant: true,
+    },
+    {
+      title: 'Place the lock',
+      description: 'Overlay permission keeps the barrier visible the instant a blocked app appears.',
+      icon: <Lock className="text-sky-400" size={48} />,
+      permission: perms.overlay ? 'Lock screen granted' : 'Enable lock screen',
+      isGranted: perms.overlay,
+      action: () => window.Android?.requestOverlay(),
+      requiresGrant: true,
+    },
+    {
+      title: 'Catch every reopen',
+      description: 'Accessibility lets FocusFine intercept launches, recents taps, and fast reopen attempts.',
+      icon: <ShieldCheck className="text-rose-400" size={48} />,
+      permission: perms.accessibility ? 'Accessibility granted' : 'Enable app blocking',
       isGranted: perms.accessibility,
       action: () => window.Android?.requestAccessibilityService(),
-      requiresGrant: true
+      requiresGrant: true,
     },
-    { title: 'Unstoppable Mode', description: 'To prevent any bypass, FocusFine runs persistently. This is your commitment to staying focused.', icon: <Zap className="text-amber-400 drop-shadow-[0_0_15px_rgba(251,191,36,0.8)]" size={48} />, permission: 'Enable Unstoppable Mode', action: () => window.Android?.requestBatteryOptimization(), requiresGrant: false },
+    {
+      title: 'Keep protection alive',
+      description: 'Battery exemption helps FocusFine stay awake in the background when you try to slip past it.',
+      icon: <Wrench className="text-amber-300" size={48} />,
+      permission: 'Enable resilient mode',
+      isGranted: false,
+      action: () => window.Android?.requestBatteryOptimization(),
+      requiresGrant: false,
+    },
   ];
-  
+
   const current = steps[onboardingStep];
   const isLast = onboardingStep === steps.length - 1;
   const showRestrictedHelp = Boolean(current.requiresGrant && !current.isGranted);
 
-  // Auto-advance if already granted
   useEffect(() => {
     if (onboardingStep > 0 && current.requiresGrant && current.isGranted) {
-      setTimeout(() => setOnboardingStep(s => s + 1), 600);
+      const timer = window.setTimeout(() => setOnboardingStep(step => Math.min(step + 1, steps.length - 1)), 500);
+      return () => window.clearTimeout(timer);
     }
-  }, [perms, onboardingStep, current.isGranted, current.requiresGrant, setOnboardingStep]);
+    return undefined;
+  }, [current.isGranted, current.requiresGrant, onboardingStep, setOnboardingStep, steps.length]);
 
-  const handleNextTap = () => {
+  const pollActivation = () => {
+    const interval = window.setInterval(refreshActivation, 900);
+    window.setTimeout(() => window.clearInterval(interval), 5_500);
+  };
+
+  const handleNext = () => {
     if (onboardingStep === 0) {
       setOnboardingStep(1);
-    } else if (current.requiresGrant && !current.isGranted) {
+      return;
+    }
+
+    if (current.requiresGrant && !current.isGranted) {
       current.action?.();
-      // Start a polling check for 5 seconds to catch the permission grant
-      const interval = setInterval(refreshPerms, 1000);
-      setTimeout(() => clearInterval(interval), 5000);
-    } else if (isLast) {
+      pollActivation();
+      return;
+    }
+
+    if (isLast) {
       current.action?.();
       setStep('setup');
-    } else {
-      setOnboardingStep(s => s + 1);
+      return;
     }
+
+    setOnboardingStep(step => step + 1);
   };
 
   return (
-    <motion.div initial={{ opacity: 0 }} animate={{ opacity: 1 }} className="fixed inset-0 bg-black flex flex-col p-8 md:p-16 z-[100] overflow-y-auto">
-      <div className="flex-1 flex flex-col items-center justify-center space-y-10 max-w-sm mx-auto w-full">
-        <motion.div 
+    <motion.div initial={{opacity: 0}} animate={{opacity: 1}} className="fixed inset-0 z-[100] overflow-y-auto bg-[radial-gradient(circle_at_top,_rgba(16,185,129,0.18),_transparent_30%),_#020617] px-6 py-8 md:px-16 md:py-16">
+      <div className="mx-auto flex min-h-full w-full max-w-md flex-col justify-center gap-8">
+        <motion.div
           key={onboardingStep}
-          initial={{ y: 20, opacity: 0 }}
-          animate={{ y: 0, opacity: 1 }}
-          transition={{ type: 'spring', damping: 20 }}
-          className="p-10 rounded-[3rem] bg-zinc-900/50 border border-white/5 backdrop-blur-3xl shadow-2xl relative overflow-hidden w-full"
-        >
-          <div className="absolute top-0 right-0 w-32 h-32 bg-white/5 rounded-full blur-3xl -mr-16 -mt-16" />
-          <div className="relative z-10 flex flex-col items-center text-center">
-            <div className="mb-8 p-6 rounded-3xl bg-zinc-900 border border-white/10 shadow-inner">
-              {current.icon}
-            </div>
-            <h2 className="text-4xl font-black text-white mb-4 font-outfit uppercase tracking-tighter leading-none">{current.title}</h2>
-            <p className="text-zinc-400 text-sm font-medium leading-relaxed">{current.description}</p>
+          initial={{y: 18, opacity: 0}}
+          animate={{y: 0, opacity: 1}}
+          transition={{type: 'spring', damping: 20}}
+          className="relative overflow-hidden rounded-[2.8rem] border border-white/8 bg-zinc-950/90 p-10 shadow-[0_30px_80px_rgba(0,0,0,0.45)]">
+          <div className="absolute -right-10 -top-10 h-36 w-36 rounded-full bg-emerald-400/8 blur-3xl" />
+          <div className="relative flex flex-col items-center text-center">
+            <div className="mb-8 rounded-[2rem] border border-white/8 bg-white/5 p-6">{current.icon}</div>
+            <p className="mb-3 text-[11px] font-bold uppercase tracking-[0.24em] text-emerald-300/70">Protection setup</p>
+            <h2 className="text-4xl font-black tracking-tight text-white">{current.title}</h2>
+            <p className="mt-4 text-sm leading-7 text-zinc-400">{current.description}</p>
           </div>
         </motion.div>
 
-        <div className="flex flex-col gap-4 w-full">
-          <button 
-            onClick={handleNextTap}
+        <div className="rounded-[2rem] border border-white/8 bg-zinc-950/90 p-5 shadow-2xl">
+          <Button
+            onClick={handleNext}
             disabled={Boolean(current.requiresGrant && current.isGranted)}
-            className={`w-full py-6 rounded-[2rem] font-black text-lg font-outfit uppercase tracking-widest transition-all shadow-xl hover:scale-[1.02] active:scale-[0.98] ${onboardingStep === 0 ? 'bg-white text-black' : (current.isGranted ? 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30' : 'bg-white text-black shadow-white/10')}`}
-          >
-            {onboardingStep === 0 ? 'Begin Setup' : current.permission || 'Next'}
-          </button>
-          
-          {showRestrictedHelp && !current.isGranted && (
-            <motion.div 
-              initial={{ opacity: 0 }} 
-              animate={{ opacity: 1 }}
-              className="p-5 rounded-[1.5rem] bg-zinc-900/80 border border-zinc-800/50 backdrop-blur-md"
-            >
+            ariaLabel={onboardingStep === 0 ? 'Begin setup' : current.permission ?? 'Continue'}
+            className={`w-full text-base font-black uppercase tracking-[0.22em] ${onboardingStep === 0 ? 'bg-white text-black' : current.isGranted ? 'border border-emerald-500/35 bg-emerald-500/15 text-emerald-300' : 'bg-white text-black'}`}>
+            {onboardingStep === 0 ? 'Begin setup' : current.permission ?? 'Continue'}
+          </Button>
+
+          {showRestrictedHelp && (
+            <div className="mt-4 rounded-[1.5rem] border border-zinc-800 bg-zinc-900/70 p-4">
               <div className="flex items-start gap-3">
-                <div className="p-1.5 rounded-full bg-blue-500/20 text-blue-400 mt-0.5">
+                <div className="mt-0.5 rounded-full bg-blue-500/15 p-2 text-blue-400">
                   <ShieldCheck size={14} />
                 </div>
                 <div>
-                  <h4 className="text-sm font-bold text-white font-outfit">Can't enable settings?</h4>
-                  <p className="text-[11px] text-zinc-500 mt-1 leading-normal">
-                    Android may restrict sideloaded apps. To fix it: Open <strong>App Info</strong> &gt; tap <strong>three dots</strong> (top-right) &gt; select <strong>"Allow restricted settings"</strong>.
+                  <p className="text-sm font-bold text-white">If Android blocks the toggle</p>
+                  <p className="mt-1 text-xs leading-6 text-zinc-500">
+                    Open <strong>App info</strong>, tap the <strong>three dots</strong>, then allow <strong>restricted settings</strong>.
                   </p>
                 </div>
               </div>
-            </motion.div>
+            </div>
           )}
 
           {isLast && (
-            <button onClick={() => setStep('setup')} className="w-full py-4 text-zinc-600 text-xs font-bold uppercase tracking-widest hover:text-zinc-400">
-              Skip for now
+            <button
+              onClick={() => setStep('setup')}
+              className="mt-4 w-full text-xs font-bold uppercase tracking-[0.22em] text-zinc-500 transition-colors hover:text-zinc-300">
+              Continue without battery exemption
             </button>
           )}
 
-          <div className="flex justify-center gap-2 mt-10">
-            {steps.map((_, i) => (
-              <div key={i} className={`h-1.5 rounded-full transition-all duration-300 ${i === onboardingStep ? 'w-8 bg-white shadow-xl' : 'w-2 bg-zinc-800'}`} />
+          <div className="mt-8 flex justify-center gap-2">
+            {steps.map((_, index) => (
+              <div key={index} className={`h-1.5 rounded-full transition-all ${index === onboardingStep ? 'w-8 bg-white' : 'w-2 bg-zinc-800'}`} />
             ))}
           </div>
         </div>
@@ -416,537 +533,1194 @@ const OnboardingView = ({
   );
 };
 
-const SetupView = ({ 
-  installedApps, 
-  loadingApps, 
-  toggleApp, 
-  updateLimit, 
-  updateMode,
-  updateTimeWindow,
-  finishSetup 
-}: { 
-  installedApps: InstalledApp[], 
-  loadingApps: boolean, 
-  toggleApp: (pkg: string) => void, 
-  updateLimit: (pkg: string, minutes: number) => void, 
-  updateMode: (pkg: string, mode: PolicyMode) => void,
-  updateTimeWindow: (pkg: string, startMinuteOfDay: number, endMinuteOfDay: number) => void,
-  finishSetup: () => void 
+const RepairView = ({
+  activation,
+  refreshActivation,
+  resumeFlow,
+}: {
+  activation: ActivationState;
+  refreshActivation: () => ActivationState | null;
+  resumeFlow: () => void;
 }) => {
-  const selectedCount = installedApps.filter(a => a.isSelected).length;
+  const launchAndPoll = (action?: () => void) => {
+    action?.();
+    const interval = window.setInterval(refreshActivation, 900);
+    window.setTimeout(() => {
+      window.clearInterval(interval);
+      const next = refreshActivation();
+      if (next?.onboardingComplete && next.hasCorePermissions) {
+        resumeFlow();
+      }
+    }, 5_500);
+  };
+
+  const statusItems = [
+    {
+      key: 'usage',
+      title: 'Usage access',
+      description: 'Needed to track how long a protected app has been used today.',
+      isHealthy: activation.usageAccess,
+      action: () => launchAndPoll(() => window.Android?.requestUsageAccess()),
+      buttonLabel: activation.usageAccess ? 'Granted' : 'Restore',
+    },
+    {
+      key: 'overlay',
+      title: 'Overlay lock',
+      description: 'Keeps the barrier visible over a blocked app instead of leaving it usable underneath.',
+      isHealthy: activation.overlay,
+      action: () => launchAndPoll(() => window.Android?.requestOverlay()),
+      buttonLabel: activation.overlay ? 'Granted' : 'Restore',
+    },
+    {
+      key: 'accessibility',
+      title: 'Accessibility intercept',
+      description: 'Catches recents taps, app relaunches, and fast reopen attempts.',
+      isHealthy: activation.accessibility,
+      action: () => launchAndPoll(() => window.Android?.requestAccessibilityService()),
+      buttonLabel: activation.accessibility ? 'Granted' : 'Restore',
+    },
+    {
+      key: 'service',
+      title: 'Monitor heartbeat',
+      description: 'Shows whether the background guard is still checking policy and usage.',
+      isHealthy: activation.monitoringServiceHealthy,
+      action: () => {
+        window.Android?.ensureMonitoringService?.();
+        const interval = window.setInterval(refreshActivation, 900);
+        window.setTimeout(() => window.clearInterval(interval), 4_000);
+      },
+      buttonLabel: activation.monitoringServiceHealthy ? 'Healthy' : 'Restart',
+    },
+  ];
 
   return (
-    <div className="max-w-2xl mx-auto px-6 py-16 relative">
-      <header className="mb-10 text-center relative z-10">
-        <p className="text-emerald-400 text-xs font-bold uppercase tracking-widest mb-2 font-outfit">Phase 1</p>
-        <h1 className="text-4xl font-black mb-3 text-white font-outfit">Select Targets</h1>
-        <p className="text-zinc-400">Lock down the apps that consume your time.</p>
-      </header>
-      {loadingApps ? (
-        <div className="flex items-center justify-center py-20 text-zinc-500">
-          <Loader size={24} className="animate-spin mr-3" /> Loading applications…
+    <div className="mx-auto flex min-h-screen w-full max-w-3xl flex-col px-6 py-12 pb-32">
+      <div className="rounded-[2.6rem] border border-rose-500/20 bg-[radial-gradient(circle_at_top,_rgba(244,63,94,0.14),_transparent_38%),_rgba(9,9,11,0.95)] p-8 shadow-[0_30px_80px_rgba(0,0,0,0.55)]">
+        <div className="flex items-start gap-4">
+          <div className="rounded-[1.6rem] border border-rose-500/20 bg-rose-500/10 p-4 text-rose-300">
+            <ShieldAlert size={28} />
+          </div>
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-rose-300/75">Recovery center</p>
+            <h1 className="mt-2 text-4xl font-black tracking-tight text-white">Protection needs repair</h1>
+            <p className="mt-3 max-w-xl text-sm leading-7 text-zinc-400">
+              FocusFine kept your rules, but one or more protection layers slipped. Restore them here, then jump straight back into the live barrier.
+            </p>
+          </div>
         </div>
-      ) : (
-        <div className="space-y-4 mb-24 max-h-[55vh] overflow-y-auto pb-6 custom-scrollbar relative z-10">
-          {installedApps.map((app, i) => (
-            <motion.div 
-              initial={{ opacity: 0, y: 10 }} animate={{ opacity: 1, y: 0 }} transition={{ delay: i * 0.05 }}
-              key={app.packageName} onClick={() => toggleApp(app.packageName)}
-              className={`flex items-center justify-between p-5 rounded-[2rem] transition-all cursor-pointer ${app.isSelected ? 'glass-card-active' : 'glass-card hover:bg-zinc-800/40'}`}>
-              <div className="flex items-center gap-4">
-                <AppIcon packageName={app.packageName} appName={app.appName} />
+
+        <div className="mt-8 grid gap-4">
+          {statusItems.map(item => (
+            <div key={item.key} className="rounded-[1.8rem] border border-white/6 bg-black/30 p-5">
+              <div className="flex items-start justify-between gap-4">
                 <div>
-                  <h3 className="font-semibold text-white text-lg font-outfit">{app.appName}</h3>
-                  {app.isSelected && (
-                    <div className="mt-2 flex flex-col gap-2" onClick={e => e.stopPropagation()}>
-                      <div className="flex items-center gap-2">
-                        <Clock size={14} className="text-emerald-400" />
-                        <input type="number" value={app.limitMinutes} min={1} max={720}
-                          aria-label={`Daily limit for ${app.appName} in minutes`}
-                          title={`Set daily limit for ${app.appName}`}
-                          disabled={app.enforcementMode === 'TIME_ONLY'}
-                          onChange={e => updateLimit(app.packageName, parseInt(e.target.value) || 1)}
-                          className="w-14 bg-transparent border-b border-zinc-600 focus:border-emerald-400 outline-none text-sm font-medium text-white p-0 text-center shadow-none disabled:opacity-40" />
-                        <span className="text-xs text-zinc-500 uppercase font-bold tracking-wider">min / day</span>
-                      </div>
-                      <div className="flex items-center gap-2">
-                        <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Mode</span>
-                        <select
-                          value={app.enforcementMode}
-                          onChange={e => updateMode(app.packageName, e.target.value as PolicyMode)}
-                          className="bg-zinc-900 border border-zinc-700 rounded-xl px-2 py-1 text-xs text-white"
-                          aria-label={`Enforcement mode for ${app.appName}`}
-                        >
-                          <option value="USAGE_ONLY">Usage only</option>
-                          <option value="TIME_ONLY">Time block</option>
-                          <option value="COMBINED">Combined</option>
-                        </select>
-                      </div>
-                      {app.enforcementMode !== 'USAGE_ONLY' && (
-                        <div className="flex items-center gap-2">
-                          <span className="text-[10px] text-zinc-500 font-bold uppercase tracking-wider">Block</span>
-                          <input
-                            type="time"
-                            value={toTimeInput(app.timeRules[0]?.startMinuteOfDay ?? 21 * 60)}
-                            onChange={e => updateTimeWindow(
-                              app.packageName,
-                              fromTimeInput(e.target.value),
-                              app.timeRules[0]?.endMinuteOfDay ?? 9 * 60
-                            )}
-                            className="bg-zinc-900 border border-zinc-700 rounded-xl px-2 py-1 text-xs text-white"
-                            aria-label={`Block start time for ${app.appName}`}
-                          />
-                          <span className="text-zinc-500 text-xs">to</span>
-                          <input
-                            type="time"
-                            value={toTimeInput(app.timeRules[0]?.endMinuteOfDay ?? 9 * 60)}
-                            onChange={e => updateTimeWindow(
-                              app.packageName,
-                              app.timeRules[0]?.startMinuteOfDay ?? 21 * 60,
-                              fromTimeInput(e.target.value)
-                            )}
-                            className="bg-zinc-900 border border-zinc-700 rounded-xl px-2 py-1 text-xs text-white"
-                            aria-label={`Block end time for ${app.appName}`}
-                          />
-                        </div>
-                      )}
-                    </div>
-                  )}
+                  <p className="text-sm font-bold text-white">{item.title}</p>
+                  <p className="mt-1 text-sm leading-6 text-zinc-500">{item.description}</p>
                 </div>
+                <span className={`rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] ${item.isHealthy ? 'bg-emerald-500/15 text-emerald-300' : 'bg-rose-500/15 text-rose-300'}`}>
+                  {item.isHealthy ? 'Healthy' : 'Needs action'}
+                </span>
               </div>
-              <div className={`w-7 h-7 rounded-full border-2 flex items-center justify-center transition-all ${app.isSelected ? 'bg-emerald-500 border-emerald-500 shadow-lg' : 'border-zinc-700'}`}>
-                {app.isSelected && <CheckCircle2 size={16} className="text-black" />}
+              <div className="mt-4 flex items-center justify-between gap-4">
+                <p className="text-xs font-semibold uppercase tracking-[0.16em] text-zinc-600">
+                  {item.key === 'service' ? `Last heartbeat ${formatHeartbeat(activation.heartbeatAgeMs)}` : item.isHealthy ? 'Ready' : 'Open system settings'}
+                </p>
+                <Button
+                  onClick={item.isHealthy ? undefined : item.action}
+                  disabled={item.isHealthy}
+                  className={`${item.isHealthy ? 'border border-emerald-500/30 bg-emerald-500/12 text-emerald-300' : 'bg-white text-black'}`}>
+                  {item.buttonLabel}
+                </Button>
               </div>
-            </motion.div>
+            </div>
           ))}
         </div>
-      )}
-      <div className="fixed bottom-0 left-0 w-full p-6 bg-gradient-to-t from-black via-black to-transparent z-20">
-        <Button disabled={selectedCount === 0 || loadingApps} onClick={finishSetup} ariaLabel="Finish Setup" className="w-full py-5 text-lg shadow-xl">
-          {selectedCount === 0 ? 'Select at least one' : `Engage Lock on ${selectedCount} App${selectedCount > 1 ? 's' : ''}`}
-        </Button>
+
+        <div className="mt-8 flex flex-col gap-3 rounded-[1.8rem] border border-white/6 bg-black/30 p-5 md:flex-row md:items-center md:justify-between">
+          <div>
+            <p className="text-sm font-bold text-white">Rules are still on-device</p>
+            <p className="mt-1 text-sm leading-6 text-zinc-500">You are repairing the guard, not rebuilding your whole setup.</p>
+          </div>
+          <Button onClick={resumeFlow} disabled={!activation.hasCorePermissions} className="bg-white text-black">
+            Return to FocusFine
+          </Button>
+        </div>
       </div>
     </div>
   );
 };
 
-const DashboardView = ({ 
-  monitoredApps, 
-  stats, 
-  weeklyData, 
-  setStep, 
-  setMonitoredApps,
-  toggleStrictMode
-}: { 
-  monitoredApps: MonitoredApp[], 
-  stats: DashboardStats, 
-  weeklyData: WeeklyStatDay[], 
-  setStep: React.Dispatch<React.SetStateAction<AppState>>, 
-  setMonitoredApps: React.Dispatch<React.SetStateAction<MonitoredApp[]>>,
-  toggleStrictMode: (enabled: boolean) => void
+const PolicyEditorSheet = ({
+  app,
+  workspaceMode,
+  strictMode,
+  keyboardInset,
+  onClose,
+  onSave,
+  onRemove,
+}: {
+  app: PolicyApp;
+  workspaceMode: WorkspaceMode;
+  strictMode: boolean;
+  keyboardInset: number;
+  onClose: () => void;
+  onSave: (nextApp: PolicyApp) => void;
+  onRemove: (packageName: string) => boolean;
 }) => {
-  const scoreSign = stats.scoreDiffVsYesterday >= 0 ? '+' : '';
-  const timeSavedHrs = (stats.timeSavedMinutes / 60).toFixed(1);
-  const modeLabel = (mode: PolicyMode) => {
-    if (mode === 'COMBINED') return 'Combined';
-    if (mode === 'TIME_ONLY') return 'Time block';
-    return 'Usage only';
+  const [draft, setDraft] = useState<PolicyApp>(app);
+  const [confirmRemove, setConfirmRemove] = useState(false);
+
+  useEffect(() => {
+    setDraft(app);
+    setConfirmRemove(false);
+  }, [app]);
+
+  const showUsageFields = draft.enforcementMode !== 'TIME_ONLY';
+  const showTimeFields = draft.enforcementMode !== 'USAGE_ONLY';
+  const primaryRule = draft.timeRules[0] ?? DEFAULT_WEEKLY_RULES[0];
+  const removalDisabled = strictMode || Boolean(draft.blockState?.blocked);
+
+  const updateMode = (mode: PolicyMode) => {
+    setDraft(prev => ({
+      ...prev,
+      enforcementMode: mode,
+      usageLimitEnabled: mode !== 'TIME_ONLY',
+      timeBlockEnabled: mode !== 'USAGE_ONLY',
+      timeRules: mode === 'USAGE_ONLY' ? [] : prev.timeRules.length ? prev.timeRules : DEFAULT_WEEKLY_RULES,
+    }));
+  };
+
+  const updateTimeWindow = (startMinuteOfDay: number, endMinuteOfDay: number) => {
+    setDraft(prev => ({
+      ...prev,
+      timeRules: DEFAULT_WEEKLY_RULES.map(rule => ({
+        ...rule,
+        startMinuteOfDay,
+        endMinuteOfDay,
+      })),
+    }));
+  };
+
+  const handleSave = () => {
+    onSave({
+      ...draft,
+      limitMinutes: Math.max(1, Math.min(720, Math.round(draft.limitMinutes || 1))),
+    });
+    onClose();
+  };
+
+  const handleRemove = () => {
+    if (removalDisabled || !draft.persisted) return;
+    if (!confirmRemove) {
+      setConfirmRemove(true);
+      return;
+    }
+    const removed = onRemove(draft.packageName);
+    if (removed) {
+      onClose();
+    }
+  };
+
+  const focusInput = (event: React.FocusEvent<HTMLInputElement | HTMLSelectElement>) => {
+    scrollFieldIntoView(event.currentTarget);
   };
 
   return (
-    <div className="max-w-2xl mx-auto px-6 py-12 pb-32 relative">
-      <div className="fixed top-[-10%] left-[-10%] w-[120%] h-[50vh] bg-top-glow pointer-events-none z-0" />
-      <header className="flex items-center justify-between mb-10 relative z-10">
-        <div className="flex items-center gap-3">
-          <div className="w-10 h-10 rounded-xl bg-gradient-to-br from-emerald-400 to-emerald-600 flex items-center justify-center shadow-lg">
-            <Zap size={20} className="text-black" />
+    <div className="fixed inset-0 z-[120] bg-black/80 backdrop-blur-md">
+      <div className="flex h-full items-end justify-center md:items-center">
+        <motion.div
+          initial={{y: 24, opacity: 0}}
+          animate={{y: 0, opacity: 1}}
+          exit={{y: 24, opacity: 0}}
+          className="relative flex h-[92vh] w-full max-w-xl flex-col overflow-hidden rounded-t-[2.6rem] border border-white/8 bg-zinc-950 shadow-[0_30px_100px_rgba(0,0,0,0.6)] md:h-auto md:max-h-[92vh] md:rounded-[2.6rem]">
+          <div className="border-b border-white/6 px-6 pb-5 pt-6">
+            <div className="flex items-start justify-between gap-4">
+              <div>
+                <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-emerald-300/70">
+                  {workspaceMode === 'initial' ? 'Rule designer' : 'Manage protection'}
+                </p>
+                <h2 className="mt-2 text-2xl font-black tracking-tight text-white">{draft.appName}</h2>
+                <p className="mt-2 text-sm leading-6 text-zinc-400">
+                  {draft.enforcementMode === 'COMBINED'
+                    ? 'Blocked windows win first. Outside them, the daily allowance takes over.'
+                    : draft.enforcementMode === 'TIME_ONLY'
+                      ? 'This app stays closed during the chosen schedule, no matter how much time remains.'
+                      : 'This app stays open until today’s allowance is spent.'}
+                </p>
+              </div>
+              <button onClick={onClose} className="rounded-full border border-white/8 bg-white/5 p-3 text-zinc-400 transition-colors hover:text-white">
+                <X size={18} />
+              </button>
+            </div>
           </div>
-          <h1 className="text-2xl font-black text-white font-outfit uppercase tracking-tight">FocusFine</h1>
+
+          <div className="overflow-y-auto px-6 pb-40 pt-6" style={{paddingBottom: `${keyboardInset + 160}px`}}>
+            <div className="grid gap-4">
+              <div className="rounded-[1.8rem] border border-white/6 bg-white/4 p-5">
+                <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-zinc-500">Live state</p>
+                <p className="mt-2 text-lg font-bold text-white">{formatBlockState(draft.blockState)}</p>
+                <p className="mt-2 text-sm leading-6 text-zinc-500">
+                  {draft.persisted ? 'This rule is already protecting the app.' : 'This app will become protected when you save your setup.'}
+                </p>
+              </div>
+
+              <div className="rounded-[1.8rem] border border-white/6 bg-white/4 p-5">
+                <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-zinc-500">Mode</p>
+                <div className="mt-4 grid grid-cols-3 gap-2">
+                  {[
+                    {key: 'USAGE_ONLY' as PolicyMode, label: 'Usage'},
+                    {key: 'TIME_ONLY' as PolicyMode, label: 'Time block'},
+                    {key: 'COMBINED' as PolicyMode, label: 'Combined'},
+                  ].map(option => (
+                    <button
+                      key={option.key}
+                      onClick={() => updateMode(option.key)}
+                      className={`rounded-[1.3rem] border px-3 py-3 text-sm font-bold transition-all ${draft.enforcementMode === option.key ? 'border-emerald-400/50 bg-emerald-400/12 text-emerald-300' : 'border-white/8 bg-black/30 text-zinc-400 hover:text-white'}`}>
+                      {option.label}
+                    </button>
+                  ))}
+                </div>
+              </div>
+
+              {showUsageFields && (
+                <div className="rounded-[1.8rem] border border-white/6 bg-white/4 p-5">
+                  <div className="flex items-start justify-between gap-4">
+                    <div>
+                      <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-zinc-500">Daily allowance</p>
+                      <p className="mt-2 text-sm leading-6 text-zinc-400">Choose how many minutes this app is allowed outside blocked windows.</p>
+                    </div>
+                    <Clock3 size={18} className="mt-1 text-emerald-300" />
+                  </div>
+                  <label className="mt-5 block text-xs font-bold uppercase tracking-[0.18em] text-zinc-500">
+                    Minutes per day
+                    <input
+                      type="number"
+                      min={1}
+                      max={720}
+                      value={draft.limitMinutes}
+                      onFocus={focusInput}
+                      onChange={event => setDraft(prev => ({...prev, limitMinutes: parseInt(event.target.value, 10) || 1}))}
+                      className="mt-3 w-full rounded-[1.3rem] border border-white/8 bg-black/30 px-4 py-4 text-lg font-bold text-white outline-none transition-colors focus:border-emerald-400"
+                    />
+                  </label>
+                </div>
+              )}
+
+              {showTimeFields && (
+                <div className="rounded-[1.8rem] border border-white/6 bg-white/4 p-5">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-zinc-500">Recurring block window</p>
+                  <p className="mt-2 text-sm leading-6 text-zinc-400">Version one repeats the same window every day, which keeps the lock simple and reliable.</p>
+                  <div className="mt-5 grid gap-4 sm:grid-cols-2">
+                    <label className="block text-xs font-bold uppercase tracking-[0.18em] text-zinc-500">
+                      Block from
+                      <input
+                        type="time"
+                        value={toTimeInput(primaryRule.startMinuteOfDay)}
+                        onFocus={focusInput}
+                        onChange={event => updateTimeWindow(fromTimeInput(event.target.value), primaryRule.endMinuteOfDay)}
+                        className="mt-3 w-full rounded-[1.3rem] border border-white/8 bg-black/30 px-4 py-4 text-base font-bold text-white outline-none transition-colors focus:border-emerald-400"
+                      />
+                    </label>
+                    <label className="block text-xs font-bold uppercase tracking-[0.18em] text-zinc-500">
+                      Block until
+                      <input
+                        type="time"
+                        value={toTimeInput(primaryRule.endMinuteOfDay)}
+                        onFocus={focusInput}
+                        onChange={event => updateTimeWindow(primaryRule.startMinuteOfDay, fromTimeInput(event.target.value))}
+                        className="mt-3 w-full rounded-[1.3rem] border border-white/8 bg-black/30 px-4 py-4 text-base font-bold text-white outline-none transition-colors focus:border-emerald-400"
+                      />
+                    </label>
+                  </div>
+                  <p className="mt-4 rounded-[1.3rem] border border-amber-500/15 bg-amber-500/10 px-4 py-3 text-sm leading-6 text-amber-100/85">
+                    Active schedule: {formatScheduleSummary(draft.timeRules)}
+                  </p>
+                </div>
+              )}
+
+              {workspaceMode === 'manage' && draft.persisted && (
+                <div className="rounded-[1.8rem] border border-rose-500/20 bg-rose-500/8 p-5">
+                  <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-rose-200/80">Danger zone</p>
+                  <p className="mt-2 text-sm leading-6 text-zinc-300">
+                    Removing protection is deliberate. FocusFine refuses it while Strict Mode is active or while this app is currently blocked.
+                  </p>
+                  <p className="mt-3 text-sm font-semibold text-rose-200">
+                    {strictMode
+                      ? 'Strict Mode is active. Destructive changes are locked.'
+                      : draft.blockState?.blocked
+                        ? 'This app is blocked right now. Wait until the barrier is no longer active.'
+                        : confirmRemove
+                          ? 'Tap again to confirm permanent removal.'
+                          : 'Protection can be removed from here only.'}
+                  </p>
+                  <button
+                    onClick={handleRemove}
+                    disabled={removalDisabled}
+                    className={`mt-4 w-full rounded-[1.3rem] border px-4 py-4 text-sm font-bold uppercase tracking-[0.2em] transition-all ${removalDisabled ? 'border-white/8 bg-white/5 text-zinc-500' : confirmRemove ? 'border-rose-400/45 bg-rose-500/15 text-rose-200' : 'border-rose-500/25 bg-rose-500/10 text-rose-100 hover:bg-rose-500/15'}`}>
+                    {confirmRemove ? 'Confirm remove protection' : 'Remove protection'}
+                  </button>
+                </div>
+              )}
+            </div>
+          </div>
+
+          <div className="absolute inset-x-0 bottom-0 border-t border-white/6 bg-zinc-950/95 px-6 py-5 backdrop-blur-xl" style={{bottom: keyboardInset ? `${keyboardInset}px` : undefined}}>
+            <div className="flex flex-col gap-3 sm:flex-row">
+              <Button onClick={onClose} className="w-full border border-white/8 bg-white/5 text-zinc-200">
+                Close
+              </Button>
+              <Button onClick={handleSave} className="w-full bg-white text-black">
+                Save rule
+              </Button>
+            </div>
+          </div>
+        </motion.div>
+      </div>
+    </div>
+  );
+};
+
+const SetupView = ({
+  workspaceMode,
+  installedApps,
+  loadingApps,
+  strictMode,
+  editorApp,
+  keyboardInset,
+  openEditor,
+  toggleSelection,
+  finishSetup,
+  goBack,
+  saveEditor,
+  removePolicy,
+}: {
+  workspaceMode: WorkspaceMode;
+  installedApps: PolicyApp[];
+  loadingApps: boolean;
+  strictMode: boolean;
+  editorApp: PolicyApp | null;
+  keyboardInset: number;
+  openEditor: (packageName: string) => void;
+  toggleSelection: (packageName: string, forceSelect?: boolean) => void;
+  finishSetup: () => void;
+  goBack: () => void;
+  saveEditor: (nextApp: PolicyApp) => void;
+  removePolicy: (packageName: string) => boolean;
+}) => {
+  const [query, setQuery] = useState('');
+  const selectedCount = installedApps.filter(app => app.isSelected).length;
+
+  const filteredApps = useMemo(() => {
+    const normalizedQuery = query.trim().toLowerCase();
+    return [...installedApps]
+      .filter(app => !normalizedQuery || app.appName.toLowerCase().includes(normalizedQuery))
+      .sort((left, right) => {
+        const leftRank = Number(left.persisted || left.isSelected);
+        const rightRank = Number(right.persisted || right.isSelected);
+        if (leftRank !== rightRank) return rightRank - leftRank;
+        return left.appName.localeCompare(right.appName);
+      });
+  }, [installedApps, query]);
+
+  return (
+    <div className="relative mx-auto flex min-h-screen w-full max-w-4xl flex-col px-6 py-10 pb-36">
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-[radial-gradient(circle_at_top,_rgba(16,185,129,0.18),_transparent_55%)]" />
+
+      <header className="relative z-10">
+        <div className="flex items-center justify-between gap-4">
+          {workspaceMode === 'manage' ? (
+            <button
+              onClick={goBack}
+              className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/5 px-4 py-2 text-xs font-bold uppercase tracking-[0.2em] text-zinc-300 transition-colors hover:text-white">
+              <ArrowLeft size={14} /> Dashboard
+            </button>
+          ) : (
+            <span className="rounded-full border border-emerald-400/15 bg-emerald-400/10 px-4 py-2 text-[10px] font-bold uppercase tracking-[0.22em] text-emerald-300/80">
+              Build your barrier
+            </span>
+          )}
+          <span className="rounded-full border border-white/8 bg-white/5 px-4 py-2 text-[10px] font-bold uppercase tracking-[0.2em] text-zinc-400">
+            {selectedCount} protected
+          </span>
         </div>
-        <div className="flex items-center gap-2 px-4 py-2 rounded-full bg-zinc-900/80 border border-white/5 backdrop-blur-md">
-          <div className="w-2 h-2 rounded-full bg-emerald-500 animate-pulse" />
-          <span className="text-[10px] font-bold text-zinc-400 uppercase tracking-widest">Ironclad Active</span>
+        <h1 className="mt-6 text-4xl font-black tracking-tight text-white">
+          {workspaceMode === 'manage' ? 'Protection studio' : 'Choose your target apps'}
+        </h1>
+        <p className="mt-3 max-w-2xl text-sm leading-7 text-zinc-400">
+          {workspaceMode === 'manage'
+            ? 'Review live rules, tune schedules, and add new targets without weakening the barrier by accident.'
+            : 'Pick the apps that leak attention, then give each one a rule that matches your real life.'}
+        </p>
+      </header>
+
+      <div className="relative z-10 mt-8 rounded-[2rem] border border-white/6 bg-zinc-950/80 p-4 shadow-2xl">
+        <label className="flex items-center gap-3 rounded-[1.5rem] border border-white/6 bg-black/30 px-4 py-3">
+          <Search size={16} className="text-zinc-500" />
+          <input
+            type="text"
+            value={query}
+            onChange={event => setQuery(event.target.value)}
+            placeholder="Search apps"
+            className="w-full bg-transparent text-sm text-white outline-none placeholder:text-zinc-600"
+          />
+        </label>
+      </div>
+
+      <div className="relative z-10 mt-6 grid gap-4">
+        {loadingApps ? (
+          <div className="flex items-center justify-center rounded-[2rem] border border-white/6 bg-zinc-950/80 py-24 text-zinc-500">
+            <Loader size={22} className="mr-3 animate-spin" /> Loading applications...
+          </div>
+        ) : (
+          filteredApps.map(app => {
+            const summary = app.enforcementMode === 'USAGE_ONLY' ? `${app.limitMinutes} min per day` : app.enforcementMode === 'TIME_ONLY' ? formatScheduleSummary(app.timeRules) : `${app.limitMinutes} min plus ${formatScheduleSummary(app.timeRules)}`;
+            const stateLabel = app.persisted ? 'Protected now' : app.isSelected ? 'Ready to save' : 'Not protected';
+            return (
+              <motion.div
+                key={app.packageName}
+                initial={{opacity: 0, y: 10}}
+                animate={{opacity: 1, y: 0}}
+                className={`rounded-[2rem] border p-5 transition-all ${app.persisted || app.isSelected ? 'border-emerald-400/15 bg-emerald-400/6 shadow-[0_20px_50px_rgba(0,0,0,0.25)]' : 'border-white/6 bg-zinc-950/80'}`}>
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex min-w-0 items-start gap-4">
+                    <AppIcon packageName={app.packageName} appName={app.appName} />
+                    <div className="min-w-0">
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-lg font-bold text-white">{app.appName}</h3>
+                        <span className={`rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] ${app.persisted ? 'bg-emerald-500/15 text-emerald-300' : app.isSelected ? 'bg-sky-500/15 text-sky-200' : 'bg-white/5 text-zinc-500'}`}>
+                          {stateLabel}
+                        </span>
+                      </div>
+                      <p className="mt-2 text-sm leading-6 text-zinc-400">{summary}</p>
+                      {app.persisted && (
+                        <p className="mt-2 text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">
+                          {formatBlockState(app.blockState)}
+                        </p>
+                      )}
+                    </div>
+                  </div>
+
+                  <div className="flex shrink-0 items-center gap-2">
+                    {!app.isSelected && !app.persisted ? (
+                      <button
+                        onClick={() => {
+                          toggleSelection(app.packageName, true);
+                          openEditor(app.packageName);
+                        }}
+                        className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white px-4 py-3 text-xs font-bold uppercase tracking-[0.18em] text-black transition-transform active:scale-[0.98]">
+                        <Plus size={14} /> Protect
+                      </button>
+                    ) : (
+                      <button
+                        onClick={() => openEditor(app.packageName)}
+                        className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/5 px-4 py-3 text-xs font-bold uppercase tracking-[0.18em] text-zinc-200 transition-colors hover:text-white">
+                        <PencilLine size={14} /> Edit
+                      </button>
+                    )}
+                    <div className={`flex h-10 w-10 items-center justify-center rounded-full border ${app.persisted || app.isSelected ? 'border-emerald-400 bg-emerald-400 text-black' : 'border-zinc-800 text-zinc-600'}`}>
+                      {app.persisted || app.isSelected ? <CheckCircle2 size={16} /> : <ChevronRight size={16} />}
+                    </div>
+                  </div>
+                </div>
+              </motion.div>
+            );
+          })
+        )}
+      </div>
+
+      <div
+        className="fixed inset-x-0 bottom-0 z-30 border-t border-white/6 bg-[linear-gradient(180deg,rgba(2,6,23,0)_0%,rgba(2,6,23,0.92)_18%,rgba(2,6,23,0.98)_100%)] px-6 pb-6 pt-10 backdrop-blur-xl"
+        style={{bottom: keyboardInset ? `${keyboardInset}px` : undefined}}>
+        <div className="mx-auto flex w-full max-w-4xl flex-col gap-3">
+          <div className="rounded-[1.7rem] border border-white/6 bg-zinc-950/85 px-5 py-4">
+            <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-zinc-500">
+              {workspaceMode === 'manage' ? 'Safe management' : 'Before you continue'}
+            </p>
+            <p className="mt-2 text-sm leading-6 text-zinc-300">
+              {workspaceMode === 'manage'
+                ? 'Protection removal lives inside each app editor, requires confirmation, and stays blocked during Strict Mode or a live block.'
+                : 'You can fine-tune every selected app before you finish. The lock does not go live until you save this setup.'}
+            </p>
+          </div>
+          <Button
+            disabled={selectedCount === 0 || loadingApps}
+            onClick={finishSetup}
+            ariaLabel={workspaceMode === 'manage' ? 'Save changes' : 'Finish setup'}
+            className="w-full bg-white py-5 text-base font-black uppercase tracking-[0.22em] text-black">
+            {selectedCount === 0
+              ? 'Select at least one app'
+              : workspaceMode === 'manage'
+                ? 'Save changes'
+                : `Engage protection on ${selectedCount} app${selectedCount > 1 ? 's' : ''}`}
+          </Button>
+        </div>
+      </div>
+
+      <AnimatePresence>
+        {editorApp && (
+          <PolicyEditorSheet
+            app={editorApp}
+            workspaceMode={workspaceMode}
+            strictMode={strictMode}
+            keyboardInset={keyboardInset}
+            onClose={goBack}
+            onSave={saveEditor}
+            onRemove={removePolicy}
+          />
+        )}
+      </AnimatePresence>
+    </div>
+  );
+};
+
+const DashboardView = ({
+  monitoredApps,
+  stats,
+  weeklyData,
+  activation,
+  openManagement,
+  openRepair,
+  toggleStrictMode,
+  refreshProtection,
+}: {
+  monitoredApps: PolicyApp[];
+  stats: DashboardStats;
+  weeklyData: WeeklyStatDay[];
+  activation: ActivationState;
+  openManagement: (packageName?: string) => void;
+  openRepair: () => void;
+  toggleStrictMode: (enabled: boolean) => void;
+  refreshProtection: () => void;
+}) => {
+  const scoreSign = stats.scoreDiffVsYesterday >= 0 ? '+' : '';
+  const timeSavedHours = (stats.timeSavedMinutes / 60).toFixed(1);
+  const healthOkay = activation.hasCorePermissions && activation.monitoringServiceHealthy;
+
+  return (
+    <div className="relative mx-auto flex min-h-screen w-full max-w-4xl flex-col px-6 py-10 pb-32">
+      <div className="pointer-events-none absolute inset-x-0 top-0 h-80 bg-[radial-gradient(circle_at_top,_rgba(16,185,129,0.18),_transparent_55%)]" />
+
+      <header className="relative z-10 flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+        <div>
+          <div className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/5 px-4 py-2 text-[10px] font-bold uppercase tracking-[0.22em] text-zinc-400">
+            <div className={`h-2 w-2 rounded-full ${healthOkay ? 'bg-emerald-400 animate-pulse' : 'bg-amber-400'}`} />
+            {healthOkay ? 'Protection healthy' : 'Protection needs attention'}
+          </div>
+          <h1 className="mt-5 text-4xl font-black tracking-tight text-white">FocusFine control room</h1>
+          <p className="mt-3 max-w-2xl text-sm leading-7 text-zinc-400">
+            Strong rules, live health, and zero casual escape hatches. This is where you tune the barrier without weakening it.
+          </p>
+        </div>
+
+        <div className="flex flex-wrap items-center gap-3">
+          <button
+            onClick={() => toggleStrictMode(!stats.strictMode)}
+            className={`rounded-full border px-4 py-3 text-xs font-bold uppercase tracking-[0.18em] transition-all ${stats.strictMode ? 'border-red-500/35 bg-red-500/12 text-red-200' : 'border-white/8 bg-white/5 text-zinc-300'}`}>
+            {stats.strictMode ? 'Strict Mode on' : 'Enable Strict Mode'}
+          </button>
+          <button
+            onClick={healthOkay ? refreshProtection : openRepair}
+            className="rounded-full border border-white/8 bg-white/5 px-4 py-3 text-xs font-bold uppercase tracking-[0.18em] text-zinc-300 transition-colors hover:text-white">
+            {healthOkay ? 'Refresh shield' : 'Repair protection'}
+          </button>
         </div>
       </header>
 
-      <div className="flex justify-end mb-4 relative z-10">
-        <button 
-          onClick={() => toggleStrictMode(!stats.strictMode)}
-          className={`px-4 py-2 rounded-full text-xs font-bold transition-all border ${stats.strictMode ? 'bg-red-500/20 border-red-500 text-red-500 shadow-glow-red' : 'bg-zinc-900 border-zinc-700 text-zinc-500'}`}
-        >
-          {stats.strictMode ? 'STRICT MODE ACTIVE' : 'ENABLE STRICT MODE'}
-        </button>
-      </div>
-
-      <div className="grid grid-cols-1 md:grid-cols-2 gap-4 mb-8 relative z-10">
-        <div className="p-8 rounded-[2.5rem] bg-white text-black shadow-[0_20px_50px_rgba(255,255,255,0.1)] relative overflow-hidden group">
-          <div className="absolute top-0 right-0 w-32 h-32 bg-black/5 rounded-full blur-[40px] -mr-16 -mt-16 group-hover:bg-black/10 transition-all duration-700" />
-          <h2 className="text-sm font-bold uppercase tracking-widest opacity-40 mb-1 font-outfit">Focus Score</h2>
-          <div className="flex items-baseline gap-2">
-            <p className="text-6xl font-black font-outfit">{stats.focusScore}%</p>
-            <span className={`text-sm font-bold ${stats.scoreDiffVsYesterday >= 0 ? 'text-emerald-600' : 'text-red-500'}`}>
-              {scoreSign}{stats.scoreDiffVsYesterday}%
+      <div className="relative z-10 mt-8 grid gap-4 md:grid-cols-2">
+        <div className="relative overflow-hidden rounded-[2.5rem] bg-white p-8 text-black shadow-[0_20px_60px_rgba(255,255,255,0.08)]">
+          <div className="absolute -right-8 -top-8 h-28 w-28 rounded-full bg-black/6 blur-3xl" />
+          <p className="text-[11px] font-bold uppercase tracking-[0.22em] opacity-45">Focus score</p>
+          <div className="mt-3 flex items-end gap-3">
+            <p className="text-6xl font-black">{stats.focusScore}%</p>
+            <span className={`mb-2 text-sm font-bold ${stats.scoreDiffVsYesterday >= 0 ? 'text-emerald-700' : 'text-red-600'}`}>
+              {scoreSign}
+              {stats.scoreDiffVsYesterday}%
             </span>
           </div>
-          <p className="text-xs font-medium opacity-50 mt-2">vs. yesterday</p>
+          <p className="mt-2 text-sm opacity-50">versus yesterday</p>
         </div>
 
-        <div className="p-8 rounded-[2.5rem] glass-card relative overflow-hidden group">
-          <div className="absolute top-0 right-0 w-32 h-32 bg-emerald-500/10 rounded-full blur-[40px] -mr-16 -mt-16 group-hover:bg-emerald-500/20 transition-all duration-700" />
-          <h2 className="text-sm font-bold uppercase tracking-widest text-zinc-500 mb-1 font-outfit">Time Reclaimed</h2>
-          <div className="flex items-baseline gap-1">
-            <p className="text-6xl font-black text-white font-outfit">{timeSavedHrs}</p>
-            <span className="text-2xl font-bold text-emerald-400 font-outfit">hrs</span>
+        <div className="relative overflow-hidden rounded-[2.5rem] border border-white/6 bg-zinc-950/85 p-8 shadow-2xl">
+          <div className="absolute -right-8 -top-8 h-28 w-28 rounded-full bg-emerald-500/10 blur-3xl" />
+          <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-zinc-500">Time reclaimed</p>
+          <div className="mt-3 flex items-end gap-2">
+            <p className="text-6xl font-black text-white">{timeSavedHours}</p>
+            <span className="mb-2 text-2xl font-bold text-emerald-300">hrs</span>
           </div>
-          <p className="text-xs font-medium text-zinc-500 mt-2">saved from distractions</p>
+          <p className="mt-2 text-sm text-zinc-500">saved from distraction loops</p>
         </div>
       </div>
 
-      <div className="relative z-10">
-        <h2 className="text-xl font-bold mb-6 flex items-center gap-3 text-white font-outfit">
-          <ShieldCheck size={20} className="text-zinc-500" /> Current barriers
-        </h2>
-        
-        <div className="space-y-4 mb-10">
-          <AnimatePresence initial={false}>
-            {monitoredApps.map((app) => {
-              const pct = Math.min((app.usedMinutes / app.dailyLimitMinutes) * 100, 100);
-              const isOver = app.usedMinutes > app.dailyLimitMinutes;
-              return (
-                <motion.div key={app.packageName} initial={{ opacity: 0, scale: 0.95 }} animate={{ opacity: 1, scale: 1 }} exit={{ opacity: 0, height: 0 }}
-                  className="glass-card rounded-[2rem] p-6 relative overflow-hidden group">
-                  <div className="flex items-center justify-between relative z-10">
-                    <div className="flex items-center gap-5">
-                      <AppIcon packageName={app.packageName} appName={app.appName} />
-                      <div>
-                        <h3 className="font-bold text-white text-lg font-outfit">{app.appName}</h3>
-                        <p className={`text-xs font-bold uppercase tracking-wider mt-1 ${isOver ? 'text-red-400' : 'text-zinc-500'}`}>
-                          {app.usedMinutes} / {app.dailyLimitMinutes} min
-                          {isOver && ' · BREACHED'}
-                        </p>
-                        <p className="text-[10px] text-zinc-500 mt-1 uppercase tracking-wider font-semibold">
-                          {modeLabel(app.enforcementMode)}
-                          {app.timeBlockEnabled ? ' · time window active' : ''}
-                        </p>
+      <div className="relative z-10 mt-8 rounded-[2.3rem] border border-white/6 bg-zinc-950/85 p-6 shadow-2xl">
+        <div className="flex flex-col gap-4 md:flex-row md:items-start md:justify-between">
+          <div>
+            <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-zinc-500">Protection health</p>
+            <h2 className="mt-2 text-2xl font-black text-white">{healthOkay ? 'Barrier ready' : 'Repair recommended'}</h2>
+            <p className="mt-2 text-sm leading-6 text-zinc-400">Rules stay on-device. This panel tells you whether the guard itself is still awake and ready.</p>
+          </div>
+          <div className="rounded-[1.6rem] border border-white/6 bg-black/25 px-5 py-4 text-right">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Monitor heartbeat</p>
+            <p className="mt-1 text-sm font-semibold text-white">{formatHeartbeat(activation.heartbeatAgeMs)}</p>
+          </div>
+        </div>
+
+        <div className="mt-5 grid gap-3 md:grid-cols-4">
+          {[
+            {label: 'Usage access', healthy: activation.usageAccess},
+            {label: 'Overlay lock', healthy: activation.overlay},
+            {label: 'Accessibility', healthy: activation.accessibility},
+            {label: 'Monitor service', healthy: activation.monitoringServiceHealthy},
+          ].map(item => (
+            <div key={item.label} className="rounded-[1.5rem] border border-white/6 bg-black/25 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">{item.label}</p>
+              <p className={`mt-2 text-sm font-semibold ${item.healthy ? 'text-emerald-300' : 'text-amber-200'}`}>
+                {item.healthy ? 'Healthy' : 'Needs attention'}
+              </p>
+            </div>
+          ))}
+        </div>
+      </div>
+
+      <section className="relative z-10 mt-10">
+        <div className="mb-5 flex items-center justify-between gap-4">
+          <h2 className="flex items-center gap-3 text-xl font-bold text-white">
+            <ShieldCheck size={20} className="text-emerald-300" /> Current barriers
+          </h2>
+          <button
+            onClick={() => openManagement()}
+            className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/5 px-4 py-3 text-xs font-bold uppercase tracking-[0.18em] text-zinc-300 transition-colors hover:text-white">
+            <Plus size={14} /> Add target
+          </button>
+        </div>
+
+        <div className="grid gap-4">
+          {monitoredApps.map(app => {
+            const pct = Math.min((app.usedMinutes / Math.max(app.limitMinutes, 1)) * 100, 100);
+            const isOver = app.usedMinutes >= app.limitMinutes && app.enforcementMode !== 'TIME_ONLY';
+            return (
+              <motion.div
+                key={app.packageName}
+                initial={{opacity: 0, scale: 0.96}}
+                animate={{opacity: 1, scale: 1}}
+                className="relative overflow-hidden rounded-[2rem] border border-white/6 bg-zinc-950/85 p-6 shadow-2xl">
+                <div className="flex items-start justify-between gap-4">
+                  <div className="flex items-start gap-4">
+                    <AppIcon packageName={app.packageName} appName={app.appName} />
+                    <div>
+                      <div className="flex flex-wrap items-center gap-2">
+                        <h3 className="text-lg font-bold text-white">{app.appName}</h3>
+                        <span className={`rounded-full px-3 py-1 text-[10px] font-bold uppercase tracking-[0.18em] ${app.blockState?.blocked ? 'bg-rose-500/15 text-rose-200' : 'bg-emerald-500/15 text-emerald-300'}`}>
+                          {app.blockState?.blocked ? 'Blocked now' : 'Ready'}
+                        </span>
                       </div>
+                      <p className={`mt-2 text-sm font-semibold ${isOver ? 'text-rose-200' : 'text-zinc-400'}`}>
+                        {app.enforcementMode === 'TIME_ONLY' ? 'Time window rule' : `${app.usedMinutes} / ${app.limitMinutes} min today`}
+                      </p>
+                      <p className="mt-2 text-xs font-semibold uppercase tracking-[0.18em] text-zinc-500">
+                        {app.enforcementMode === 'COMBINED' ? 'Combined mode' : app.enforcementMode === 'TIME_ONLY' ? 'Time block only' : 'Usage limit only'}
+                        {app.timeBlockEnabled ? ` · ${formatScheduleSummary(app.timeRules)}` : ''}
+                      </p>
+                      <p className="mt-2 text-sm text-zinc-400">{formatBlockState(app.blockState)}</p>
                     </div>
-                    <button onClick={() => {
-                        window.Android?.removeApp(app.packageName);
-                        setMonitoredApps(prev => prev.filter(a => a.packageName !== app.packageName));
-                      }}
-                      aria-label={`Remove lock for ${app.appName}`}
-                      title={`Remove lock for ${app.appName}`}
-                      className="w-10 h-10 rounded-full flex items-center justify-center bg-zinc-800 text-zinc-400 hover:bg-zinc-700 hover:text-white transition-colors">
-                      <X size={16} />
-                    </button>
                   </div>
-                  <div className="absolute bottom-0 left-0 w-full h-1.5 bg-zinc-800" aria-hidden="true">
-                    <motion.div 
-                      initial={{ width: 0 }}
-                      animate={{ width: `${pct}%` }}
-                      transition={{ duration: 0.7, ease: "easeOut" }}
-                      className={`h-full ${isOver ? 'bg-red-500 shadow-[0_0_10px_rgba(239,68,68,0.8)]' : 'bg-emerald-400 shadow-[0_0_10px_rgba(16,185,129,0.5)]'}`}
+
+                  <button
+                    onClick={() => openManagement(app.packageName)}
+                    className="inline-flex items-center gap-2 rounded-full border border-white/8 bg-white/5 px-4 py-3 text-xs font-bold uppercase tracking-[0.18em] text-zinc-300 transition-colors hover:text-white">
+                    <PencilLine size={14} /> Manage
+                  </button>
+                </div>
+
+                {app.enforcementMode !== 'TIME_ONLY' && (
+                  <div className="mt-5 h-1.5 w-full overflow-hidden rounded-full bg-zinc-900">
+                    <motion.div
+                      initial={{width: 0}}
+                      animate={{width: `${pct}%`}}
+                      transition={{duration: 0.7, ease: 'easeOut'}}
+                      className={`h-full ${isOver ? 'bg-rose-400' : 'bg-emerald-400'}`}
                     />
                   </div>
-                </motion.div>
-              );
-            })}
-          </AnimatePresence>
-
-          {monitoredApps.length > 0 && (
-            <button onClick={() => setStep('setup')}
-              aria-label="Add target app"
-              title="Add target app"
-              className="w-full py-5 rounded-[2rem] border border-dashed border-zinc-700 text-zinc-500 flex items-center justify-center gap-2 hover:border-zinc-500 hover:text-white transition-all hover:bg-zinc-900/50">
-              <Plus size={18} /> Add Target
-            </button>
-          )}
+                )}
+              </motion.div>
+            );
+          })}
         </div>
-      </div>
+      </section>
 
-      <div className="mt-16 relative z-10">
-        <h2 className="text-xl font-bold mb-6 flex items-center gap-3 text-white font-outfit">
+      <section className="relative z-10 mt-12">
+        <h2 className="mb-6 flex items-center gap-3 text-xl font-bold text-white">
           <BarChart3 size={20} className="text-zinc-500" /> Executive summary
         </h2>
         <StreakCard days={stats.streakDays} />
         <WeeklyTrend data={weeklyData} />
-      </div>
+      </section>
     </div>
   );
 };
 
-// ── Main Controller ──────────────────────────────────────────────────────────
-
 export default function App() {
   const [step, setStep] = useState<AppState>('loading');
+  const [workspaceMode, setWorkspaceMode] = useState<WorkspaceMode>('initial');
   const [onboardingStep, setOnboardingStep] = useState(0);
-
-  // Permissions state
   const [perms, setPerms] = useState<PermissionsState>(DEFAULT_PERMS);
-
-  // Setup screen state
-  const [installedApps, setInstalledApps] = useState<InstalledApp[]>([]);
+  const [activation, setActivation] = useState<ActivationState>(DEFAULT_ACTIVATION);
+  const [installedApps, setInstalledApps] = useState<PolicyApp[]>([]);
   const [loadingApps, setLoadingApps] = useState(false);
-
-  // Dashboard state
-  const [monitoredApps, setMonitoredApps] = useState<MonitoredApp[]>([]);
+  const [editorPackage, setEditorPackage] = useState<string | null>(null);
+  const [monitoredApps, setMonitoredApps] = useState<PolicyApp[]>([]);
   const [stats, setStats] = useState<DashboardStats>(DEFAULT_STATS);
   const [weeklyData, setWeeklyData] = useState<WeeklyStatDay[]>([]);
+  const keyboardInset = useKeyboardInset();
 
-  const refreshPerms = useCallback(() => {
-    if (window.Android) {
-      try {
-        const p = JSON.parse(window.Android.isPermissionsGranted());
-        setPerms({
-          usageAccess: Boolean(p.usageAccess),
-          overlay: Boolean(p.overlay),
-          accessibility: Boolean(p.accessibility),
-        });
-        return p;
-      } catch (e) {
-        return null;
-      }
+  const readActivationState = useCallback((): ActivationState | null => {
+    if (!window.Android) return null;
+
+    try {
+      const raw = window.Android.getActivationState ? window.Android.getActivationState() : window.Android.isPermissionsGranted();
+      const parsed = JSON.parse(raw);
+      return {
+        usageAccess: Boolean(parsed.usageAccess),
+        overlay: Boolean(parsed.overlay),
+        accessibility: Boolean(parsed.accessibility),
+        onboardingComplete: Boolean(parsed.onboardingComplete),
+        hasCorePermissions: Boolean(parsed.hasCorePermissions ?? (parsed.usageAccess && parsed.overlay && parsed.accessibility)),
+        monitoringServiceRunning: Boolean(parsed.monitoringServiceRunning),
+        monitoringServiceHealthy: Boolean(parsed.monitoringServiceHealthy),
+        lastServiceCheckTime: Number(parsed.lastServiceCheckTime ?? 0),
+        heartbeatAgeMs: typeof parsed.heartbeatAgeMs === 'number' ? parsed.heartbeatAgeMs : null,
+        needsRepair: Boolean(parsed.needsRepair),
+        strictMode: Boolean(parsed.strictMode),
+      };
+    } catch {
+      return null;
     }
-    return null;
   }, []);
 
-  useEffect(() => {
-    const p = refreshPerms();
-    if (p) {
-      const latestPerms: PermissionsState = {
-        usageAccess: Boolean(p.usageAccess),
-        overlay: Boolean(p.overlay),
-        accessibility: Boolean(p.accessibility),
-      };
-      const hasCorePermissions =
-        latestPerms.usageAccess &&
-        latestPerms.overlay &&
-        latestPerms.accessibility;
-
-      if (p.onboardingComplete && hasCorePermissions) {
-        const apps = JSON.parse(window.Android!.getMonitoredApps());
-        setStep(apps.length > 0 ? 'dashboard' : 'setup');
-      } else {
-        if (p.onboardingComplete && window.Android) {
-          window.Android.setOnboardingComplete(false);
-        }
-        setOnboardingStep(getFirstIncompleteOnboardingStep(latestPerms));
-        setStep('onboarding');
-      }
-    } else {
-      setTimeout(() => setStep('onboarding'), 800);
+  const refreshActivation = useCallback(() => {
+    const next = readActivationState();
+    if (next) {
+      setPerms({
+        usageAccess: next.usageAccess,
+        overlay: next.overlay,
+        accessibility: next.accessibility,
+      });
+      setActivation(next);
     }
-  }, [refreshPerms]);
+    return next;
+  }, [readActivationState]);
 
-  // Re-check permissions when app window gains focus
-  useEffect(() => {
-    const handleFocus = () => refreshPerms();
-    window.addEventListener('focus', handleFocus);
-    return () => window.removeEventListener('focus', handleFocus);
-  }, [refreshPerms]);
+  const readPolicies = useCallback(() => {
+    if (!window.Android) return [];
+    try {
+      return window.Android.getAppPolicies ? JSON.parse(window.Android.getAppPolicies()) : JSON.parse(window.Android.getMonitoredApps());
+    } catch {
+      return [];
+    }
+  }, []);
 
-  const loadSetupApps = () => {
+  const routeFromActivation = useCallback(
+    (next: ActivationState) => {
+      if (next.onboardingComplete) {
+        if (next.hasCorePermissions) {
+          window.Android?.ensureMonitoringService?.();
+          const apps = readPolicies();
+          setStep(apps.length > 0 ? 'dashboard' : 'setup');
+          setWorkspaceMode(apps.length > 0 ? 'manage' : 'initial');
+          return;
+        }
+        setStep('repair');
+        return;
+      }
+
+      if (next.hasCorePermissions) {
+        setWorkspaceMode('initial');
+        setStep('setup');
+        return;
+      }
+
+      setOnboardingStep(getFirstIncompleteOnboardingStep(next));
+      setStep('onboarding');
+    },
+    [readPolicies],
+  );
+
+  const loadSetupApps = useCallback(() => {
     setLoadingApps(true);
-    if (window.Android) {
-      try {
-        const installed: { packageName: string; appName: string }[] =
-          JSON.parse(window.Android.getInstalledApps());
-        const policies: Array<{
-          packageName: string;
-          appName: string;
-          dailyLimitMinutes: number;
-          enforcementMode?: PolicyMode;
-          usageLimitEnabled?: boolean;
-          timeBlockEnabled?: boolean;
-          timeRules?: TimeRule[];
-        }> = window.Android.getAppPolicies
-          ? JSON.parse(window.Android.getAppPolicies())
-          : JSON.parse(window.Android.getMonitoredApps());
-        const policyMap = new Map(policies.map(p => [p.packageName, p]));
 
-        setInstalledApps(installed.map(app => ({
-          ...app,
+    try {
+      if (!window.Android) {
+        setInstalledApps(DEMO_INSTALLED);
+        setLoadingApps(false);
+        return;
+      }
+
+      const installed: {packageName: string; appName: string}[] = JSON.parse(window.Android.getInstalledApps());
+      const policies: Array<{
+        packageName: string;
+        appName: string;
+        dailyLimitMinutes: number;
+        enforcementMode?: PolicyMode;
+        usageLimitEnabled?: boolean;
+        timeBlockEnabled?: boolean;
+        timeRules?: TimeRule[];
+      }> = readPolicies();
+
+      const usageArr: {packageName: string; usedMinutes: number}[] = JSON.parse(window.Android.getTodayUsage());
+      const usageMap = new Map(usageArr.map(item => [item.packageName, item.usedMinutes]));
+      const policyMap = new Map(policies.map(policy => [policy.packageName, policy]));
+
+      const nextApps: PolicyApp[] = installed.map(app => {
+        let blockState: BlockState | null = null;
+        if (policyMap.has(app.packageName) && window.Android?.getCurrentBlockState) {
+          try {
+            const rawBlockState = JSON.parse(window.Android.getCurrentBlockState(app.packageName));
+            blockState = {
+              blocked: Boolean(rawBlockState.blocked),
+              reason: rawBlockState.reason ?? null,
+              blockEndsAt: typeof rawBlockState.blockEndsAt === 'number' ? rawBlockState.blockEndsAt : null,
+            };
+          } catch {
+            blockState = null;
+          }
+        }
+
+        return {
+          packageName: app.packageName,
+          appName: app.appName,
           limitMinutes: policyMap.get(app.packageName)?.dailyLimitMinutes ?? 30,
           isSelected: policyMap.has(app.packageName),
+          persisted: policyMap.has(app.packageName),
           enforcementMode: policyMap.get(app.packageName)?.enforcementMode ?? 'COMBINED',
           usageLimitEnabled: policyMap.get(app.packageName)?.usageLimitEnabled ?? true,
           timeBlockEnabled: policyMap.get(app.packageName)?.timeBlockEnabled ?? true,
-          timeRules: policyMap.get(app.packageName)?.timeRules?.length
-            ? policyMap.get(app.packageName)!.timeRules!
-            : DEFAULT_WEEKLY_RULES,
-        })));
-      } catch (e) {
-        setInstalledApps(DEMO_INSTALLED);
-      }
-    } else {
-      setInstalledApps(DEMO_INSTALLED);
-    }
-    setLoadingApps(false);
-  };
-
-  const loadDashboard = () => {
-    if (window.Android) {
-      try {
-        const usageArr: { packageName: string; usedMinutes: number; limitMinutes: number }[] =
-          JSON.parse(window.Android.getTodayUsage());
-        const monitoredArr: Array<{
-          packageName: string;
-          appName: string;
-          dailyLimitMinutes: number;
-          enforcementMode?: PolicyMode;
-          usageLimitEnabled?: boolean;
-          timeBlockEnabled?: boolean;
-          timeRules?: TimeRule[];
-        }> = window.Android.getAppPolicies
-          ? JSON.parse(window.Android.getAppPolicies())
-          : JSON.parse(window.Android.getMonitoredApps());
-        const usageMap = new Map(usageArr.map(u => [u.packageName, u.usedMinutes]));
-
-        setMonitoredApps(monitoredArr.map(app => ({
-          packageName: app.packageName,
-          appName: app.appName,
-          dailyLimitMinutes: app.dailyLimitMinutes,
+          timeRules: policyMap.get(app.packageName)?.timeRules?.length ? policyMap.get(app.packageName)!.timeRules! : DEFAULT_WEEKLY_RULES,
           usedMinutes: usageMap.get(app.packageName) ?? 0,
-          enforcementMode: app.enforcementMode ?? 'USAGE_ONLY',
-          usageLimitEnabled: app.usageLimitEnabled ?? true,
-          timeBlockEnabled: app.timeBlockEnabled ?? false,
-          timeRules: app.timeRules ?? [],
-        })));
-
-        const s: DashboardStats = JSON.parse(window.Android.getDashboardStats());
-        setStats(s);
-
-        const weekly: WeeklyStatDay[] = JSON.parse(window.Android.getWeeklyStats());
-        setWeeklyData(weekly);
-      } catch (e) {}
-    }
-  };
-
-  useEffect(() => { if (step === 'setup') loadSetupApps(); }, [step]);
-  useEffect(() => { if (step === 'dashboard') loadDashboard(); }, [step]);
-
-  const toggleApp = (pkg: string) =>
-    setInstalledApps(prev => prev.map(a => a.packageName === pkg ? { ...a, isSelected: !a.isSelected } : a));
-
-  const updateLimit = (pkg: string, minutes: number) =>
-    setInstalledApps(prev => prev.map(a => a.packageName === pkg ? { ...a, limitMinutes: minutes } : a));
-
-  const updateMode = (pkg: string, mode: PolicyMode) =>
-    setInstalledApps(prev => prev.map(a => {
-      if (a.packageName !== pkg) return a;
-      return {
-        ...a,
-        enforcementMode: mode,
-        usageLimitEnabled: mode !== 'TIME_ONLY',
-        timeBlockEnabled: mode !== 'USAGE_ONLY',
-        timeRules: mode === 'USAGE_ONLY' ? [] : (a.timeRules.length ? a.timeRules : DEFAULT_WEEKLY_RULES),
-      };
-    }));
-
-  const updateTimeWindow = (pkg: string, startMinuteOfDay: number, endMinuteOfDay: number) =>
-    setInstalledApps(prev => prev.map(a => {
-      if (a.packageName !== pkg) return a;
-      const rules = DEFAULT_WEEKLY_RULES.map(rule => ({
-        ...rule,
-        startMinuteOfDay,
-        endMinuteOfDay,
-      }));
-      return { ...a, timeRules: rules };
-    }));
-
-  const finishSetup = () => {
-    const selected = installedApps.filter(a => a.isSelected);
-    if (window.Android) {
-      const latest = refreshPerms();
-      if (latest) {
-        const latestPerms: PermissionsState = {
-          usageAccess: Boolean(latest.usageAccess),
-          overlay: Boolean(latest.overlay),
-          accessibility: Boolean(latest.accessibility),
+          blockState,
         };
+      });
 
-        if (!latestPerms.usageAccess || !latestPerms.overlay || !latestPerms.accessibility) {
-          window.Android.setOnboardingComplete(false);
-          setOnboardingStep(getFirstIncompleteOnboardingStep(latestPerms));
-          setStep('onboarding');
-          return;
-        }
+      setInstalledApps(nextApps);
+      if (editorPackage && !nextApps.some(app => app.packageName === editorPackage)) {
+        setEditorPackage(null);
       }
+    } catch {
+      setInstalledApps(DEMO_INSTALLED);
+    } finally {
+      setLoadingApps(false);
+    }
+  }, [editorPackage, readPolicies]);
 
-      selected.forEach(app => {
-        if (window.Android?.saveAppPolicy) {
-          const policy = {
-            packageName: app.packageName,
-            appName: app.appName,
-            dailyLimitMinutes: app.limitMinutes,
-            isEnabled: true,
-            enforcementMode: app.enforcementMode,
-            usageLimitEnabled: app.enforcementMode !== 'TIME_ONLY',
-            timeBlockEnabled: app.enforcementMode !== 'USAGE_ONLY',
-            timeRules: app.enforcementMode === 'USAGE_ONLY' ? [] : (app.timeRules.length ? app.timeRules : DEFAULT_WEEKLY_RULES),
-          };
-          window.Android.saveAppPolicy(JSON.stringify(policy));
-        } else {
-          window.Android!.saveApp(app.packageName, app.limitMinutes, app.appName);
-          if (window.Android?.setTimeBlockRules && app.enforcementMode !== 'USAGE_ONLY') {
-            window.Android.setTimeBlockRules(app.packageName, JSON.stringify(app.timeRules));
+  const loadDashboard = useCallback(() => {
+    if (!window.Android) return;
+
+    try {
+      const usageArr: {packageName: string; usedMinutes: number}[] = JSON.parse(window.Android.getTodayUsage());
+      const usageMap = new Map(usageArr.map(item => [item.packageName, item.usedMinutes]));
+      const policies: Array<{
+        packageName: string;
+        appName: string;
+        dailyLimitMinutes: number;
+        enforcementMode?: PolicyMode;
+        usageLimitEnabled?: boolean;
+        timeBlockEnabled?: boolean;
+        timeRules?: TimeRule[];
+      }> = readPolicies();
+
+      const nextApps: PolicyApp[] = policies.map(policy => {
+        let blockState: BlockState | null = null;
+        if (window.Android?.getCurrentBlockState) {
+          try {
+            const rawBlockState = JSON.parse(window.Android.getCurrentBlockState(policy.packageName));
+            blockState = {
+              blocked: Boolean(rawBlockState.blocked),
+              reason: rawBlockState.reason ?? null,
+              blockEndsAt: typeof rawBlockState.blockEndsAt === 'number' ? rawBlockState.blockEndsAt : null,
+            };
+          } catch {
+            blockState = null;
           }
         }
+
+        return {
+          packageName: policy.packageName,
+          appName: policy.appName,
+          limitMinutes: policy.dailyLimitMinutes,
+          isSelected: true,
+          persisted: true,
+          enforcementMode: policy.enforcementMode ?? 'USAGE_ONLY',
+          usageLimitEnabled: policy.usageLimitEnabled ?? true,
+          timeBlockEnabled: policy.timeBlockEnabled ?? false,
+          timeRules: policy.timeRules ?? [],
+          usedMinutes: usageMap.get(policy.packageName) ?? 0,
+          blockState,
+        };
       });
-      window.Android.setOnboardingComplete(true);
+
+      setMonitoredApps(nextApps);
+      setStats(JSON.parse(window.Android.getDashboardStats()));
+      setWeeklyData(JSON.parse(window.Android.getWeeklyStats()));
+    } catch {
+      // Keep previous dashboard state if parsing fails.
     }
+  }, [readPolicies]);
+
+  const persistPolicies = useCallback((appsToPersist: PolicyApp[]) => {
+    if (!window.Android) return;
+
+    appsToPersist.forEach(app => {
+      if (window.Android?.saveAppPolicy) {
+        const policy = {
+          packageName: app.packageName,
+          appName: app.appName,
+          dailyLimitMinutes: app.limitMinutes,
+          isEnabled: true,
+          enforcementMode: app.enforcementMode,
+          usageLimitEnabled: app.enforcementMode !== 'TIME_ONLY',
+          timeBlockEnabled: app.enforcementMode !== 'USAGE_ONLY',
+          timeRules: app.enforcementMode === 'USAGE_ONLY' ? [] : app.timeRules.length ? app.timeRules : DEFAULT_WEEKLY_RULES,
+        };
+        window.Android.saveAppPolicy(JSON.stringify(policy));
+      } else {
+        window.Android.saveApp(app.packageName, app.limitMinutes, app.appName);
+        if (window.Android?.setTimeBlockRules && app.enforcementMode !== 'USAGE_ONLY') {
+          window.Android.setTimeBlockRules(app.packageName, JSON.stringify(app.timeRules));
+        }
+      }
+    });
+  }, []);
+
+  useEffect(() => {
+    const next = refreshActivation();
+    if (next) {
+      routeFromActivation(next);
+    } else {
+      const timer = window.setTimeout(() => setStep('onboarding'), 800);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [refreshActivation, routeFromActivation]);
+
+  useEffect(() => {
+    const syncActivation = () => {
+      const next = refreshActivation();
+      if (next) {
+        if (step === 'repair' && next.onboardingComplete && next.hasCorePermissions) {
+          routeFromActivation(next);
+          return;
+        }
+
+        if (step === 'dashboard' && next.needsRepair) {
+          setStep('repair');
+          return;
+        }
+
+        if (step === 'onboarding' && next.hasCorePermissions) {
+          routeFromActivation(next);
+          return;
+        }
+
+        if (step === 'dashboard') {
+          loadDashboard();
+        }
+      }
+    };
+
+    window.addEventListener('focus', syncActivation);
+    window.addEventListener('focusfine:activation', syncActivation as EventListener);
+    return () => {
+      window.removeEventListener('focus', syncActivation);
+      window.removeEventListener('focusfine:activation', syncActivation as EventListener);
+    };
+  }, [loadDashboard, refreshActivation, routeFromActivation, step]);
+
+  useEffect(() => {
+    if (step === 'setup') {
+      loadSetupApps();
+    }
+  }, [loadSetupApps, step]);
+
+  useEffect(() => {
+    if (step === 'dashboard') {
+      window.Android?.ensureMonitoringService?.();
+      loadDashboard();
+    }
+  }, [loadDashboard, step]);
+
+  useEffect(() => {
+    if (step !== 'loading') {
+      const timer = window.setTimeout(() => {
+        window.Android?.notifyWebAppReady?.();
+      }, 2500);
+      return () => window.clearTimeout(timer);
+    }
+    return undefined;
+  }, [step]);
+
+  const openManagement = (packageName?: string) => {
+    setWorkspaceMode('manage');
+    setEditorPackage(packageName ?? null);
+    setStep('setup');
+  };
+
+  const toggleSelection = (packageName: string, forceSelect?: boolean) => {
+    setInstalledApps(prev =>
+      prev.map(app => {
+        if (app.packageName !== packageName) return app;
+        if (app.persisted) {
+          return {...app, isSelected: true};
+        }
+        const nextSelected = typeof forceSelect === 'boolean' ? forceSelect : !app.isSelected;
+        return {...app, isSelected: nextSelected};
+      }),
+    );
+  };
+
+  const saveEditor = (nextApp: PolicyApp) => {
+    setInstalledApps(prev =>
+      prev.map(app =>
+        app.packageName === nextApp.packageName
+          ? {
+              ...nextApp,
+              isSelected: true,
+              persisted: app.persisted || nextApp.persisted,
+              blockState: app.blockState,
+              usedMinutes: app.usedMinutes,
+            }
+          : app,
+      ),
+    );
+  };
+
+  const removePolicy = (packageName: string) => {
+    if (!window.Android) return false;
+    const removed = window.Android.removeApp(packageName);
+    if (!removed) return false;
+
+    setInstalledApps(prev =>
+      prev.map(app =>
+        app.packageName === packageName
+          ? {
+              ...app,
+              isSelected: false,
+              persisted: false,
+              blockState: null,
+              usedMinutes: 0,
+            }
+          : app,
+      ),
+    );
+    setMonitoredApps(prev => prev.filter(app => app.packageName !== packageName));
+    return true;
+  };
+
+  const finishSetup = () => {
+    const latest = refreshActivation();
+    if (latest && !latest.hasCorePermissions) {
+      setStep(latest.onboardingComplete ? 'repair' : 'onboarding');
+      setOnboardingStep(getFirstIncompleteOnboardingStep(latest));
+      return;
+    }
+
+    const selectedApps = installedApps.filter(app => app.isSelected);
+    persistPolicies(selectedApps);
+    window.Android?.setOnboardingComplete(true);
+    window.Android?.ensureMonitoringService?.();
+    setWorkspaceMode('manage');
+    setEditorPackage(null);
     setStep('dashboard');
   };
 
   const toggleStrictMode = (enabled: boolean) => {
-    if (window.Android) {
-      window.Android.setStrictMode(enabled);
-      setStats(prev => ({ ...prev, strictMode: enabled }));
+    window.Android?.setStrictMode(enabled);
+    setStats(prev => ({...prev, strictMode: enabled}));
+    setActivation(prev => ({...prev, strictMode: enabled}));
+  };
+
+  const refreshProtection = () => {
+    window.Android?.ensureMonitoringService?.();
+    const interval = window.setInterval(() => {
+      const next = refreshActivation();
+      if (next?.monitoringServiceHealthy) {
+        window.clearInterval(interval);
+      }
+    }, 900);
+    window.setTimeout(() => window.clearInterval(interval), 4_500);
+  };
+
+  const resumeFlow = () => {
+    const next = refreshActivation();
+    if (next) {
+      routeFromActivation(next);
     }
   };
 
+  const editorApp = editorPackage ? installedApps.find(app => app.packageName === editorPackage) ?? null : null;
+
   if (step === 'loading') {
     return (
-      <div className="min-h-screen bg-black flex items-center justify-center">
-        <motion.div animate={{ rotate: 360 }} transition={{ duration: 1, repeat: Infinity, ease: 'linear' }}>
-          <Loader size={32} className="text-white opacity-50" aria-label="Loading" />
-        </motion.div>
+      <div className="flex min-h-screen items-center justify-center bg-[radial-gradient(circle_at_top,_rgba(16,185,129,0.18),_transparent_36%),_#020617] px-6">
+        <div className="rounded-[2.2rem] border border-white/8 bg-zinc-950/85 p-8 text-center shadow-2xl">
+          <motion.div animate={{rotate: 360}} transition={{duration: 1, repeat: Infinity, ease: 'linear'}} className="mx-auto mb-4 w-fit text-white/70">
+            <Loader size={32} />
+          </motion.div>
+          <p className="text-[11px] font-bold uppercase tracking-[0.24em] text-zinc-500">Checking protection state</p>
+          <p className="mt-2 text-sm leading-6 text-zinc-400">FocusFine is rebuilding the barrier and reading your latest permissions.</p>
+        </div>
       </div>
     );
   }
 
   return (
-    <div className="min-h-screen bg-black text-white font-sans selection:bg-emerald-500/30 selection:text-white">
+    <div className="min-h-screen bg-[#020617] text-white selection:bg-emerald-500/30 selection:text-white">
       <AnimatePresence mode="wait">
-        <motion.div key={step} initial={{ opacity: 0 }} animate={{ opacity: 1 }} exit={{ opacity: 0 }} className="min-h-screen">
+        <motion.div key={step} initial={{opacity: 0}} animate={{opacity: 1}} exit={{opacity: 0}} className="min-h-screen">
           {step === 'onboarding' && (
-            <OnboardingView 
-              onboardingStep={onboardingStep} 
-              setOnboardingStep={setOnboardingStep} 
-              setStep={setStep} 
+            <OnboardingView
+              onboardingStep={onboardingStep}
+              setOnboardingStep={setOnboardingStep}
+              setStep={setStep}
               perms={perms}
-              refreshPerms={refreshPerms}
+              refreshActivation={refreshActivation}
             />
           )}
+
+          {step === 'repair' && (
+            <RepairView activation={activation} refreshActivation={refreshActivation} resumeFlow={resumeFlow} />
+          )}
+
           {step === 'setup' && (
-            <SetupView 
-              installedApps={installedApps} 
-              loadingApps={loadingApps} 
-              toggleApp={toggleApp} 
-              updateLimit={updateLimit} 
-              updateMode={updateMode}
-              updateTimeWindow={updateTimeWindow}
-              finishSetup={finishSetup} 
+            <SetupView
+              workspaceMode={workspaceMode}
+              installedApps={installedApps}
+              loadingApps={loadingApps}
+              strictMode={stats.strictMode || activation.strictMode}
+              editorApp={editorApp}
+              keyboardInset={keyboardInset}
+              openEditor={setEditorPackage}
+              toggleSelection={toggleSelection}
+              finishSetup={finishSetup}
+              goBack={() => {
+                if (editorPackage) {
+                  setEditorPackage(null);
+                } else if (workspaceMode === 'manage') {
+                  setStep('dashboard');
+                }
+              }}
+              saveEditor={saveEditor}
+              removePolicy={removePolicy}
             />
           )}
+
           {step === 'dashboard' && (
-            <DashboardView 
-              monitoredApps={monitoredApps} 
-              stats={stats} 
-              weeklyData={weeklyData} 
-              setStep={setStep} 
-              setMonitoredApps={setMonitoredApps} 
+            <DashboardView
+              monitoredApps={monitoredApps}
+              stats={stats}
+              weeklyData={weeklyData}
+              activation={activation}
+              openManagement={openManagement}
+              openRepair={() => setStep('repair')}
               toggleStrictMode={toggleStrictMode}
+              refreshProtection={refreshProtection}
             />
           )}
         </motion.div>

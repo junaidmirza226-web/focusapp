@@ -25,7 +25,8 @@
         <activity
             android:name=".MainActivity"
             android:exported="true"
-            android:theme="@style/Theme.FocusFine.SplashScreen">
+            android:theme="@style/Theme.FocusFine.SplashScreen"
+            android:windowSoftInputMode="adjustResize|stateHidden">
             <intent-filter>
                 <action android:name="android.intent.action.MAIN" />
                 <category android:name="android.intent.category.LAUNCHER" />
@@ -47,7 +48,8 @@
             android:name=".UsageMonitorService"
             android:enabled="true"
             android:exported="false"
-            android:foregroundServiceType="dataSync" />
+            android:foregroundServiceType="dataSync"
+            android:stopWithTask="false" />
 
         <!-- Accessibility Service — instant app-switch interception for lock enforcement -->
         <service
@@ -73,6 +75,11 @@
                 <action android:name="android.intent.action.MY_PACKAGE_REPLACED" />
             </intent-filter>
         </receiver>
+
+        <receiver
+            android:name=".ServiceRestartReceiver"
+            android:enabled="true"
+            android:exported="false" />
 
     </application>
 </manifest>

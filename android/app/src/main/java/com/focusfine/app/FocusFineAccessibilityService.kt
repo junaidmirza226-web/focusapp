@@ -21,6 +21,7 @@ import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
 import java.util.concurrent.ConcurrentHashMap
 import java.util.Calendar
+import kotlin.coroutines.coroutineContext
 
 /**
  * Intercepts every foreground app change and immediately redirects to OverlayActivity
@@ -150,6 +151,7 @@ class FocusFineAccessibilityService : AccessibilityService() {
     @Volatile
     private var lastRedirectAt: Long = 0L
     private var hasAttemptedMonitorStart = false
+    private var lastMonitorStartAttemptAt = 0L
     private val evaluationJobs = ConcurrentHashMap<String, Job>()
 
     override fun onServiceConnected() {
@@ -166,6 +168,7 @@ class FocusFineAccessibilityService : AccessibilityService() {
             flags = 0
         }
         ensureUsageMonitorServiceRunning()
+        ActivationStateNotifier.broadcast(this)
         Log.d(TAG, "Accessibility service connected")
     }
 
@@ -203,8 +206,8 @@ class FocusFineAccessibilityService : AccessibilityService() {
         }
 
         evaluationJobs.remove(pkg)?.cancel()
-        lateinit var evaluationJob: Job
-        evaluationJob = serviceScope.launch {
+        val evaluationJob = serviceScope.launch {
+            val runningJob = coroutineContext[Job]
             try {
                 val blockDecision = evaluateBlockingState(pkg, now)
 
@@ -239,7 +242,9 @@ class FocusFineAccessibilityService : AccessibilityService() {
             } catch (t: Throwable) {
                 Log.e(TAG, "Failed to process accessibility event for $pkg", t)
             } finally {
-                if (evaluationJobs[pkg] === evaluationJob) {
+                if (runningJob != null) {
+                    evaluationJobs.remove(pkg, runningJob)
+                } else {
                     evaluationJobs.remove(pkg)
                 }
             }
@@ -248,6 +253,7 @@ class FocusFineAccessibilityService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
+        ActivationStateNotifier.broadcast(this)
         Log.d(TAG, "Accessibility service interrupted")
     }
 
@@ -257,6 +263,7 @@ class FocusFineAccessibilityService : AccessibilityService() {
             activeInstance = null
         }
         serviceScope.cancel()
+        ActivationStateNotifier.broadcast(this)
     }
 
     private suspend fun evaluateBlockingState(
@@ -312,8 +319,18 @@ class FocusFineAccessibilityService : AccessibilityService() {
 
     private fun ensureUsageMonitorServiceRunning() {
         if (!FocusFineApp.preferences.isOnboardingComplete) return
-        if (hasAttemptedMonitorStart) return
+        val now = System.currentTimeMillis()
+        val heartbeatAge = now - FocusFineApp.preferences.lastServiceCheckTime
+        val serviceHealthy =
+            FocusFineApp.preferences.isMonitoringServiceRunning && heartbeatAge in 0..15_000L
+        if (serviceHealthy) {
+            hasAttemptedMonitorStart = false
+            return
+        }
+        if (hasAttemptedMonitorStart && (now - lastMonitorStartAttemptAt) < 3_000L) return
+
         hasAttemptedMonitorStart = true
+        lastMonitorStartAttemptAt = now
 
         val intent = Intent(this, UsageMonitorService::class.java)
         try {

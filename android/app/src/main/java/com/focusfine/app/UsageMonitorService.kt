@@ -87,6 +87,8 @@ class UsageMonitorService : Service() {
     private fun checkUsage() {
         try {
             val tickStartedAt = System.currentTimeMillis()
+            FocusFineApp.preferences.isMonitoringServiceRunning = true
+            FocusFineApp.preferences.lastServiceCheckTime = tickStartedAt
             val usm = getSystemService(Context.USAGE_STATS_SERVICE) as UsageStatsManager
             val now = tickStartedAt
             val todayStart = getTodayStartMillis()
@@ -440,8 +442,13 @@ class UsageMonitorService : Service() {
 
     override fun onTaskRemoved(rootIntent: Intent?) {
         Log.w(TAG, "App task removed; requesting monitor service restart")
-        val restartIntent = Intent(applicationContext, UsageMonitorService::class.java)
         try {
+            ServiceRestartReceiver.schedule(
+                context = applicationContext,
+                delayMs = 600L,
+                reason = "task_removed"
+            )
+            val restartIntent = Intent(applicationContext, UsageMonitorService::class.java)
             if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                 startForegroundService(restartIntent)
             } else {
@@ -461,6 +468,11 @@ class UsageMonitorService : Service() {
         FocusFineApp.preferences.lastServiceCheckTime = System.currentTimeMillis()
         if (FocusFineApp.preferences.isOnboardingComplete) {
             try {
+                ServiceRestartReceiver.schedule(
+                    context = applicationContext,
+                    delayMs = 800L,
+                    reason = "service_destroyed"
+                )
                 val restartIntent = Intent(applicationContext, UsageMonitorService::class.java)
                 if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
                     startForegroundService(restartIntent)

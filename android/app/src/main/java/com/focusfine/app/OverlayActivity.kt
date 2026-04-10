@@ -97,18 +97,18 @@ class OverlayActivity : AppCompatActivity() {
 
         when (blockReason) {
             BlockReason.TIME_BLOCK -> {
-                lockTitle.text = "Scheduled Block Active"
-                lockMessage.text = "$appName is blocked in this time window."
+                lockTitle.text = "Barrier Active"
+                lockMessage.text = "$appName is closed inside this protected time window."
                 reasonHint.visibility = View.VISIBLE
                 reasonHint.text = if (blockEndsAt != null) {
-                    "Opens at ${timeFormatter.format(Date(blockEndsAt!!))}"
+                    "Available again at ${timeFormatter.format(Date(blockEndsAt!!))}"
                 } else {
                     "Time block is active"
                 }
             }
             BlockReason.USAGE_LIMIT -> {
-                lockTitle.text = "Daily Limit Reached"
-                lockMessage.text = "You've reached your daily limit for $appName."
+                lockTitle.text = "Allowance Spent"
+                lockMessage.text = "Today's allowance for $appName is gone."
                 reasonHint.visibility = View.GONE
             }
         }
@@ -168,13 +168,13 @@ class OverlayActivity : AppCompatActivity() {
                 paymentSection.visibility = View.GONE
                 strictBanner.visibility = View.VISIBLE
                 strictBanner.setTextColor(Color.parseColor("#EF4444"))
-                strictBanner.text = "Strict Mode Active\nUnlock is disabled."
+                strictBanner.text = "Strict Mode is active.\nUnlock stays disabled until this rule clears."
             }
             purchasesUnavailable -> {
                 paymentSection.visibility = View.GONE
                 strictBanner.visibility = View.VISIBLE
                 strictBanner.setTextColor(Color.parseColor("#F59E0B"))
-                strictBanner.text = "Unlock purchases are unavailable on this device.\nClose the app to continue."
+                strictBanner.text = "Unlock purchases are unavailable on this device.\nThe barrier will stay in place."
             }
             else -> {
                 paymentSection.visibility = View.VISIBLE

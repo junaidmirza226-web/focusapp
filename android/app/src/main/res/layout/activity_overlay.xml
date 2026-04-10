@@ -138,7 +138,7 @@
             android:textSize="15sp"
             android:textStyle="bold"
             android:gravity="center"
-            android:text="🔒 Strict Mode Active\nPay-to-unlock is disabled."
+            android:text="Strict Mode is active&#10;Unlock is disabled."
             android:visibility="gone" />
 
         <Space
@@ -153,7 +153,7 @@
             android:layout_height="52dp"
             android:layout_marginBottom="12dp"
             android:backgroundTint="#111111"
-            android:text="Close App"
+            android:text="Go to Home"
             android:textAllCaps="false"
             android:textColor="#9CA3AF"
             android:textSize="15sp" />
@@ -163,7 +163,7 @@
             android:layout_height="wrap_content"
             android:layout_gravity="center_horizontal"
             android:layout_marginBottom="8dp"
-            android:text="FOCUSFINE • STAY DISCIPLINED"
+            android:text="FOCUSFINE • BARRIER ACTIVE"
             android:textColor="#374151"
             android:textSize="10sp"
             android:letterSpacing="0.12" />

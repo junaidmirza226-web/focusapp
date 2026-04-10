@@ -41,15 +41,37 @@ class FocusFineJavascriptInterface(
 
     @JavascriptInterface
     fun isPermissionsGranted(): String {
+        return getActivationState()
+    }
+
+    @JavascriptInterface
+    fun getActivationState(): String {
         val usageAccess = hasUsageAccess()
         val overlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
             Settings.canDrawOverlays(context) else true
         val accessibility = hasAccessibilityServiceEnabled()
+        val hasCorePermissions = usageAccess && overlay && accessibility
+        val now = System.currentTimeMillis()
+        val lastServiceCheckTime = prefs.lastServiceCheckTime
+        val heartbeatAgeMs = if (lastServiceCheckTime > 0L) {
+            (now - lastServiceCheckTime).coerceAtLeast(0L)
+        } else {
+            Long.MAX_VALUE
+        }
+        val monitoringServiceHealthy =
+            prefs.isMonitoringServiceRunning && heartbeatAgeMs <= 15_000L
         return JSONObject().apply {
             put("usageAccess", usageAccess)
             put("overlay", overlay)
             put("accessibility", accessibility)
             put("onboardingComplete", prefs.isOnboardingComplete)
+            put("hasCorePermissions", hasCorePermissions)
+            put("monitoringServiceRunning", prefs.isMonitoringServiceRunning)
+            put("monitoringServiceHealthy", monitoringServiceHealthy)
+            put("lastServiceCheckTime", lastServiceCheckTime)
+            put("heartbeatAgeMs", if (heartbeatAgeMs == Long.MAX_VALUE) JSONObject.NULL else heartbeatAgeMs)
+            put("needsRepair", prefs.isOnboardingComplete && !hasCorePermissions)
+            put("strictMode", prefs.isStrictModeEnabled)
         }.toString()
     }
 
@@ -103,6 +125,11 @@ class FocusFineJavascriptInterface(
                 } catch (e: Exception) { /* not all devices support this intent */ }
             }
         }
+    }
+
+    @JavascriptInterface
+    fun notifyWebAppReady() {
+        activityRef.get()?.markWebAppReady()
     }
 
     // ── Installed Apps ────────────────────────────────────────────────────────
@@ -163,8 +190,6 @@ class FocusFineJavascriptInterface(
                         dailyLimitMinutes = limitMinutes, 
                         appName = appName, 
                         isEnabled = true,
-                        baseUsageMinutes = currentUsage,
-                        lastResetDate = todayStart,
                         enforcementMode = EnforcementMode.USAGE_ONLY.name,
                         usageLimitEnabled = true,
                         timeBlockEnabled = false
@@ -223,9 +248,7 @@ class FocusFineJavascriptInterface(
                             isEnabled = isEnabled,
                             enforcementMode = enforcementMode.name,
                             usageLimitEnabled = usageEnabled,
-                            timeBlockEnabled = timeEnabled,
-                            baseUsageMinutes = currentUsage,
-                            lastResetDate = todayStart
+                            timeBlockEnabled = timeEnabled
                         )
                     )
                 } else {
@@ -269,14 +292,30 @@ class FocusFineJavascriptInterface(
     }
 
     @JavascriptInterface
-    fun removeApp(packageName: String) {
-        runBlocking(Dispatchers.IO) {
+    fun removeApp(packageName: String): Boolean {
+        return runBlocking(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            if (prefs.isStrictModeEnabled) {
+                return@runBlocking false
+            }
+
+            val evaluation = decisionEngine.evaluate(
+                packageName = packageName,
+                now = now,
+                todayStartMillis = getTodayStartMillis(),
+                rawUsageMinutesToday = getCurrentTotalUsageToday(packageName)
+            )
+            if (evaluation.decision != null) {
+                return@runBlocking false
+            }
+
             db.userSettingsDao().getSettings(packageName)?.let {
                 db.userSettingsDao().delete(it)
             }
             db.timeBlockRuleDao().deleteByPackage(packageName)
             FocusFineApp.lockedPackages.remove(packageName)
             FocusFineApp.lockedPackageNames.remove(packageName)
+            true
         }
     }
 
@@ -511,6 +550,36 @@ class FocusFineJavascriptInterface(
     @JavascriptInterface
     fun setOnboardingComplete(complete: Boolean) {
         prefs.isOnboardingComplete = complete
+    }
+
+    @JavascriptInterface
+    fun ensureMonitoringService(): Boolean {
+        if (!prefs.isOnboardingComplete) return false
+        val activity = activityRef.get()
+        return if (activity != null) {
+            activity.ensureMonitoringServiceIfEligible()
+        } else {
+            val usageAccess = hasUsageAccess()
+            val overlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Settings.canDrawOverlays(context)
+            } else {
+                true
+            }
+            val accessibility = hasAccessibilityServiceEnabled()
+            if (!(usageAccess && overlay && accessibility)) return false
+
+            try {
+                val intent = Intent(context, UsageMonitorService::class.java)
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                    context.startForegroundService(intent)
+                } else {
+                    context.startService(intent)
+                }
+                true
+            } catch (_: Throwable) {
+                false
+            }
+        }
     }
 
     private suspend fun upsertTimeRules(packageName: String, rulesArray: JSONArray) {
