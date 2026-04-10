@@ -547,6 +547,63 @@ class FocusFineJavascriptInterface(
     }
 
     /**
+     * Returns monetization and behavior framing stats for the premium dashboard layer.
+     * This is read-only analytics for copy framing and does not alter policy.
+     */
+    @JavascriptInterface
+    fun getPremiumInsights(): String {
+        return runBlocking(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            val todayStart = getTodayStartMillis()
+            val weekStart = todayStart - (6 * 86_400_000L)
+
+            val monitoredApps = db.userSettingsDao().getAllSettings().filter { it.isEnabled }
+            val usageUnlocksToday = monitoredApps.sumOf { app ->
+                db.paymentDao().getUnlockCountTodayForReason(
+                    packageName = app.packageName,
+                    blockReason = BlockReason.USAGE_LIMIT.name,
+                    todayStart = todayStart
+                )
+            }
+            val timeUnlocksToday = monitoredApps.sumOf { app ->
+                db.paymentDao().getUnlockCountTodayForReason(
+                    packageName = app.packageName,
+                    blockReason = BlockReason.TIME_BLOCK.name,
+                    todayStart = todayStart
+                )
+            }
+
+            val activeUnlocksNow = monitoredApps.sumOf { app ->
+                db.paymentDao().getActiveUnlocks(app.packageName, now).size
+            }
+
+            val spentToday = db.paymentDao().getTotalSpentToday(todayStart) ?: 0.0
+            val spentWeek = db.paymentDao().getTotalSpentToday(weekStart) ?: 0.0
+            val unlocksTodayTotal = usageUnlocksToday + timeUnlocksToday
+
+            val recommendation = when {
+                prefs.isStrictModeEnabled -> "Strict mode is active. Keep unlocks for true emergencies."
+                unlocksTodayTotal >= 4 -> "High unlock pressure today. Tighten schedule windows and enable strict mode."
+                timeUnlocksToday >= 2 -> "Time-block overrides are rising. Consider hardening your night barrier."
+                unlocksTodayTotal > 0 -> "Unlocks are still controlled. Stay deliberate and avoid repeat overrides."
+                else -> "Great control today. Keep barriers unchanged and protect momentum."
+            }
+
+            JSONObject().apply {
+                put("generatedAt", now)
+                put("spentToday", spentToday)
+                put("spentWeek", spentWeek)
+                put("usageUnlocksToday", usageUnlocksToday)
+                put("timeUnlocksToday", timeUnlocksToday)
+                put("unlocksTodayTotal", unlocksTodayTotal)
+                put("activeUnlocksNow", activeUnlocksNow)
+                put("strictMode", prefs.isStrictModeEnabled)
+                put("recommendation", recommendation)
+            }.toString()
+        }
+    }
+
+    /**
      * Returns a compact diagnostic bundle for support/recovery flows.
      * This is intentionally on-demand so the UI can copy exact live state.
      */

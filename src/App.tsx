@@ -43,6 +43,7 @@ declare global {
       getCurrentBlockState?: (pkg: string) => string;
       getSupportDiagnostics?: () => string;
       getUnlockQuote?: (pkg: string, reason: string) => string;
+      getPremiumInsights?: () => string;
       setStrictMode: (enabled: boolean) => void;
       requestUsageAccess: () => void;
       requestOverlay: () => void;
@@ -158,6 +159,18 @@ interface UnlockQuote {
   quickAmount: number;
   extendedAmount: number;
   dailyAmount: number;
+}
+
+interface PremiumInsights {
+  generatedAt: number;
+  spentToday: number;
+  spentWeek: number;
+  usageUnlocksToday: number;
+  timeUnlocksToday: number;
+  unlocksTodayTotal: number;
+  activeUnlocksNow: number;
+  strictMode: boolean;
+  recommendation: string;
 }
 
 type SupportCopyState = 'idle' | 'copied' | 'failed';
@@ -1163,6 +1176,7 @@ const DashboardView = ({
   supportDiagnostics,
   supportCopyState,
   unlockQuotes,
+  premiumInsights,
   openManagement,
   openRepair,
   toggleStrictMode,
@@ -1180,6 +1194,7 @@ const DashboardView = ({
     usage: UnlockQuote | null;
     time: UnlockQuote | null;
   };
+  premiumInsights: PremiumInsights | null;
   openManagement: (packageName?: string) => void;
   openRepair: () => void;
   toggleStrictMode: (enabled: boolean) => void;
@@ -1192,6 +1207,7 @@ const DashboardView = ({
   const healthOkay = activation.hasCorePermissions && activation.monitoringServiceHealthy;
   const usageQuote = unlockQuotes.usage ?? FALLBACK_USAGE_QUOTE;
   const timeQuote = unlockQuotes.time ?? FALLBACK_TIME_QUOTE;
+  const insights = premiumInsights;
 
   return (
     <div className="relative mx-auto flex min-h-screen w-full max-w-4xl flex-col px-6 py-10 pb-32">
@@ -1368,6 +1384,43 @@ const DashboardView = ({
             ))}
           </div>
         </div>
+
+        <div className="rounded-[2.3rem] border border-white/6 bg-zinc-950/85 p-6 shadow-2xl">
+          <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-zinc-500">Premium behavior insights</p>
+          <h2 className="mt-2 text-2xl font-black text-white">Cost of overrides</h2>
+          <p className="mt-2 text-sm leading-6 text-zinc-400">
+            Treat unlock spend as a signal. If override pressure climbs, tighten rules before willpower gets taxed.
+          </p>
+
+          <div className="mt-5 grid gap-3 sm:grid-cols-2">
+            <div className="rounded-[1.4rem] border border-white/6 bg-black/25 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Spent today</p>
+              <p className="mt-2 text-sm font-semibold text-white">${(insights?.spentToday ?? 0).toFixed(2)}</p>
+            </div>
+            <div className="rounded-[1.4rem] border border-white/6 bg-black/25 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Spent this week</p>
+              <p className="mt-2 text-sm font-semibold text-white">${(insights?.spentWeek ?? 0).toFixed(2)}</p>
+            </div>
+            <div className="rounded-[1.4rem] border border-white/6 bg-black/25 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Unlocks today</p>
+              <p className="mt-2 text-sm font-semibold text-white">{insights?.unlocksTodayTotal ?? 0}</p>
+              <p className="mt-1 text-xs text-zinc-500">
+                Usage {insights?.usageUnlocksToday ?? 0} · Time {insights?.timeUnlocksToday ?? 0}
+              </p>
+            </div>
+            <div className="rounded-[1.4rem] border border-white/6 bg-black/25 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Active unlocks now</p>
+              <p className="mt-2 text-sm font-semibold text-white">{insights?.activeUnlocksNow ?? 0}</p>
+            </div>
+          </div>
+
+          <div className="mt-5 rounded-[1.4rem] border border-white/6 bg-black/25 px-4 py-4">
+            <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Recommendation</p>
+            <p className="mt-2 text-sm text-zinc-100">
+              {insights?.recommendation ?? 'Refresh diagnostics to load premium behavior guidance.'}
+            </p>
+          </div>
+        </div>
       </div>
 
       <section className="relative z-10 mt-10">
@@ -1461,6 +1514,7 @@ export default function App() {
   const [weeklyData, setWeeklyData] = useState<WeeklyStatDay[]>([]);
   const [supportDiagnostics, setSupportDiagnostics] = useState<SupportDiagnostics | null>(null);
   const [supportCopyState, setSupportCopyState] = useState<SupportCopyState>('idle');
+  const [premiumInsights, setPremiumInsights] = useState<PremiumInsights | null>(null);
   const [unlockQuotes, setUnlockQuotes] = useState<{
     usage: UnlockQuote | null;
     time: UnlockQuote | null;
@@ -1512,6 +1566,17 @@ export default function App() {
     try {
       const parsed = JSON.parse(window.Android.getSupportDiagnostics()) as SupportDiagnostics;
       setSupportDiagnostics(parsed);
+      return parsed;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const loadPremiumInsights = useCallback(() => {
+    if (!window.Android?.getPremiumInsights) return null;
+    try {
+      const parsed = JSON.parse(window.Android.getPremiumInsights()) as PremiumInsights;
+      setPremiumInsights(parsed);
       return parsed;
     } catch {
       return null;
@@ -1684,11 +1749,12 @@ export default function App() {
       setStats(JSON.parse(window.Android.getDashboardStats()));
       setWeeklyData(JSON.parse(window.Android.getWeeklyStats()));
       loadSupportDiagnostics();
+      loadPremiumInsights();
       loadUnlockQuotes(nextApps[0]?.packageName ?? null);
     } catch {
       // Keep previous dashboard state if parsing fails.
     }
-  }, [loadSupportDiagnostics, loadUnlockQuotes, readPolicies]);
+  }, [loadPremiumInsights, loadSupportDiagnostics, loadUnlockQuotes, readPolicies]);
 
   const persistPolicies = useCallback((appsToPersist: PolicyApp[]) => {
     if (!window.Android) return;
@@ -1875,6 +1941,7 @@ export default function App() {
 
   const refreshDiagnostics = () => {
     loadSupportDiagnostics();
+    loadPremiumInsights();
     if (!unlockQuotes.usage && monitoredApps.length > 0) {
       loadUnlockQuotes(monitoredApps[0].packageName);
     }
@@ -1981,6 +2048,7 @@ export default function App() {
               supportDiagnostics={supportDiagnostics}
               supportCopyState={supportCopyState}
               unlockQuotes={unlockQuotes}
+              premiumInsights={premiumInsights}
               openManagement={openManagement}
               openRepair={() => setStep('repair')}
               toggleStrictMode={toggleStrictMode}
