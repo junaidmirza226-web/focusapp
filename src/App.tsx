@@ -41,6 +41,8 @@ declare global {
       getDashboardStats: () => string;
       getWeeklyStats: () => string;
       getCurrentBlockState?: (pkg: string) => string;
+      getSupportDiagnostics?: () => string;
+      getUnlockQuote?: (pkg: string, reason: string) => string;
       setStrictMode: (enabled: boolean) => void;
       requestUsageAccess: () => void;
       requestOverlay: () => void;
@@ -115,6 +117,42 @@ interface WeeklyStatDay {
   focusScore: number;
   totalSpent: number;
 }
+
+interface SupportDiagnostics {
+  generatedAt: number;
+  generatedAtReadable: string;
+  appVersion: string;
+  androidSdk: number;
+  deviceBrand: string;
+  deviceModel: string;
+  onboardingComplete: boolean;
+  strictMode: boolean;
+  hasCorePermissions: boolean;
+  permissions: {
+    usageAccess: boolean;
+    overlay: boolean;
+    accessibility: boolean;
+  };
+  service: {
+    running: boolean;
+    healthy: boolean;
+    lastCheckTime: number;
+    heartbeatAgeMs: number | null;
+  };
+  monitoredAppsCount: number;
+  blockedNowCount: number;
+  blockedNowPackages: string[];
+}
+
+interface UnlockQuote {
+  reason: 'USAGE_LIMIT' | 'TIME_BLOCK';
+  unlockCountToday: number;
+  quickAmount: number;
+  extendedAmount: number;
+  dailyAmount: number;
+}
+
+type SupportCopyState = 'idle' | 'copied' | 'failed';
 
 const DEFAULT_STATS: DashboardStats = {
   focusScore: 0,
@@ -248,6 +286,42 @@ const formatHeartbeat = (heartbeatAgeMs: number | null) => {
   if (heartbeatAgeMs < 2_000) return 'Just now';
   if (heartbeatAgeMs < 60_000) return `${Math.round(heartbeatAgeMs / 1000)}s ago`;
   return `${Math.round(heartbeatAgeMs / 60_000)}m ago`;
+};
+
+const FALLBACK_USAGE_QUOTE: UnlockQuote = {
+  reason: 'USAGE_LIMIT',
+  unlockCountToday: 0,
+  quickAmount: 1,
+  extendedAmount: 5,
+  dailyAmount: 20,
+};
+
+const FALLBACK_TIME_QUOTE: UnlockQuote = {
+  reason: 'TIME_BLOCK',
+  unlockCountToday: 0,
+  quickAmount: 3,
+  extendedAmount: 12,
+  dailyAmount: 40,
+};
+
+const writeTextToClipboard = async (value: string) => {
+  if (navigator.clipboard?.writeText) {
+    await navigator.clipboard.writeText(value);
+    return;
+  }
+
+  const area = document.createElement('textarea');
+  area.value = value;
+  area.setAttribute('readonly', 'true');
+  area.style.position = 'fixed';
+  area.style.left = '-9999px';
+  document.body.appendChild(area);
+  area.select();
+  const copied = document.execCommand('copy');
+  document.body.removeChild(area);
+  if (!copied) {
+    throw new Error('Clipboard copy failed');
+  }
 };
 
 const scrollFieldIntoView = (target: HTMLElement) => {
@@ -1078,23 +1152,38 @@ const DashboardView = ({
   stats,
   weeklyData,
   activation,
+  supportDiagnostics,
+  supportCopyState,
+  unlockQuotes,
   openManagement,
   openRepair,
   toggleStrictMode,
   refreshProtection,
+  refreshDiagnostics,
+  copyDiagnostics,
 }: {
   monitoredApps: PolicyApp[];
   stats: DashboardStats;
   weeklyData: WeeklyStatDay[];
   activation: ActivationState;
+  supportDiagnostics: SupportDiagnostics | null;
+  supportCopyState: SupportCopyState;
+  unlockQuotes: {
+    usage: UnlockQuote | null;
+    time: UnlockQuote | null;
+  };
   openManagement: (packageName?: string) => void;
   openRepair: () => void;
   toggleStrictMode: (enabled: boolean) => void;
   refreshProtection: () => void;
+  refreshDiagnostics: () => void;
+  copyDiagnostics: () => void;
 }) => {
   const scoreSign = stats.scoreDiffVsYesterday >= 0 ? '+' : '';
   const timeSavedHours = (stats.timeSavedMinutes / 60).toFixed(1);
   const healthOkay = activation.hasCorePermissions && activation.monitoringServiceHealthy;
+  const usageQuote = unlockQuotes.usage ?? FALLBACK_USAGE_QUOTE;
+  const timeQuote = unlockQuotes.time ?? FALLBACK_TIME_QUOTE;
 
   return (
     <div className="relative mx-auto flex min-h-screen w-full max-w-4xl flex-col px-6 py-10 pb-32">
@@ -1178,6 +1267,76 @@ const DashboardView = ({
               </p>
             </div>
           ))}
+        </div>
+      </div>
+
+      <div className="relative z-10 mt-8 grid gap-4 xl:grid-cols-2">
+        <div className="rounded-[2.3rem] border border-white/6 bg-zinc-950/85 p-6 shadow-2xl">
+          <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-zinc-500">Trust and support</p>
+          <h2 className="mt-2 text-2xl font-black text-white">Private by default</h2>
+          <p className="mt-2 text-sm leading-6 text-zinc-400">
+            Rules and usage remain on this device. When support is needed, copy a compact diagnostics bundle instead of guessing.
+          </p>
+
+          <div className="mt-5 grid gap-3 sm:grid-cols-2">
+            <div className="rounded-[1.4rem] border border-white/6 bg-black/25 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Monitored apps</p>
+              <p className="mt-2 text-sm font-semibold text-white">
+                {supportDiagnostics?.monitoredAppsCount ?? monitoredApps.length}
+              </p>
+            </div>
+            <div className="rounded-[1.4rem] border border-white/6 bg-black/25 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Blocked right now</p>
+              <p className="mt-2 text-sm font-semibold text-white">{supportDiagnostics?.blockedNowCount ?? 0}</p>
+            </div>
+            <div className="rounded-[1.4rem] border border-white/6 bg-black/25 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">Device</p>
+              <p className="mt-2 text-sm font-semibold text-white">
+                {supportDiagnostics ? `${supportDiagnostics.deviceBrand} ${supportDiagnostics.deviceModel}` : 'Live device info pending'}
+              </p>
+            </div>
+            <div className="rounded-[1.4rem] border border-white/6 bg-black/25 px-4 py-4">
+              <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">App build</p>
+              <p className="mt-2 text-sm font-semibold text-white">{supportDiagnostics?.appVersion ?? 'Unknown'}</p>
+            </div>
+          </div>
+
+          <div className="mt-5 flex flex-col gap-3 sm:flex-row">
+            <button
+              onClick={refreshDiagnostics}
+              className="inline-flex w-full items-center justify-center gap-2 rounded-[1.2rem] border border-white/8 bg-white/5 px-4 py-3 text-xs font-bold uppercase tracking-[0.18em] text-zinc-200 transition-colors hover:text-white">
+              <ShieldCheck size={14} /> Refresh diagnostics
+            </button>
+            <button
+              onClick={copyDiagnostics}
+              className={`inline-flex w-full items-center justify-center gap-2 rounded-[1.2rem] border px-4 py-3 text-xs font-bold uppercase tracking-[0.18em] transition-colors ${supportCopyState === 'copied' ? 'border-emerald-500/35 bg-emerald-500/12 text-emerald-200' : supportCopyState === 'failed' ? 'border-rose-500/30 bg-rose-500/12 text-rose-200' : 'border-white/8 bg-white text-black'}`}>
+              {supportCopyState === 'copied' ? <CheckCircle2 size={14} /> : supportCopyState === 'failed' ? <AlertTriangle size={14} /> : <ArrowRight size={14} />}
+              {supportCopyState === 'copied' ? 'Bundle copied' : supportCopyState === 'failed' ? 'Copy failed' : 'Copy support bundle'}
+            </button>
+          </div>
+        </div>
+
+        <div className="rounded-[2.3rem] border border-white/6 bg-zinc-950/85 p-6 shadow-2xl">
+          <p className="text-[11px] font-bold uppercase tracking-[0.22em] text-zinc-500">Premium unlock ladder</p>
+          <h2 className="mt-2 text-2xl font-black text-white">Friction with intention</h2>
+          <p className="mt-2 text-sm leading-6 text-zinc-400">
+            Time-block overrides are priced higher than usage-limit overrides. Repeated unlocks in one day keep increasing to prevent routine bypass.
+          </p>
+
+          <div className="mt-5 grid gap-3">
+            {[
+              {label: 'Usage limit lock', quote: usageQuote},
+              {label: 'Time block lock', quote: timeQuote},
+            ].map(row => (
+              <div key={row.label} className="rounded-[1.4rem] border border-white/6 bg-black/25 px-4 py-4">
+                <p className="text-[10px] font-bold uppercase tracking-[0.18em] text-zinc-500">{row.label}</p>
+                <p className="mt-2 text-sm font-semibold text-white">
+                  15m ${row.quote.quickAmount} · 1h ${row.quote.extendedAmount} · Day ${row.quote.dailyAmount}
+                </p>
+                <p className="mt-1 text-xs text-zinc-500">Unlock attempts today: {row.quote.unlockCountToday}</p>
+              </div>
+            ))}
+          </div>
         </div>
       </div>
 
@@ -1270,6 +1429,15 @@ export default function App() {
   const [monitoredApps, setMonitoredApps] = useState<PolicyApp[]>([]);
   const [stats, setStats] = useState<DashboardStats>(DEFAULT_STATS);
   const [weeklyData, setWeeklyData] = useState<WeeklyStatDay[]>([]);
+  const [supportDiagnostics, setSupportDiagnostics] = useState<SupportDiagnostics | null>(null);
+  const [supportCopyState, setSupportCopyState] = useState<SupportCopyState>('idle');
+  const [unlockQuotes, setUnlockQuotes] = useState<{
+    usage: UnlockQuote | null;
+    time: UnlockQuote | null;
+  }>({
+    usage: null,
+    time: null,
+  });
   const keyboardInset = useKeyboardInset();
 
   const readActivationState = useCallback((): ActivationState | null => {
@@ -1308,6 +1476,32 @@ export default function App() {
     }
     return next;
   }, [readActivationState]);
+
+  const loadSupportDiagnostics = useCallback(() => {
+    if (!window.Android?.getSupportDiagnostics) return null;
+    try {
+      const parsed = JSON.parse(window.Android.getSupportDiagnostics()) as SupportDiagnostics;
+      setSupportDiagnostics(parsed);
+      return parsed;
+    } catch {
+      return null;
+    }
+  }, []);
+
+  const loadUnlockQuotes = useCallback((packageName: string | null) => {
+    if (!packageName || !window.Android?.getUnlockQuote) {
+      setUnlockQuotes({usage: null, time: null});
+      return;
+    }
+
+    try {
+      const usage = JSON.parse(window.Android.getUnlockQuote(packageName, 'USAGE_LIMIT')) as UnlockQuote;
+      const time = JSON.parse(window.Android.getUnlockQuote(packageName, 'TIME_BLOCK')) as UnlockQuote;
+      setUnlockQuotes({usage, time});
+    } catch {
+      setUnlockQuotes({usage: null, time: null});
+    }
+  }, []);
 
   const readPolicies = useCallback(() => {
     if (!window.Android) return [];
@@ -1459,10 +1653,12 @@ export default function App() {
       setMonitoredApps(nextApps);
       setStats(JSON.parse(window.Android.getDashboardStats()));
       setWeeklyData(JSON.parse(window.Android.getWeeklyStats()));
+      loadSupportDiagnostics();
+      loadUnlockQuotes(nextApps[0]?.packageName ?? null);
     } catch {
       // Keep previous dashboard state if parsing fails.
     }
-  }, [readPolicies]);
+  }, [loadSupportDiagnostics, loadUnlockQuotes, readPolicies]);
 
   const persistPolicies = useCallback((appsToPersist: PolicyApp[]) => {
     if (!window.Android) return;
@@ -1647,6 +1843,41 @@ export default function App() {
     window.setTimeout(() => window.clearInterval(interval), 4_500);
   };
 
+  const refreshDiagnostics = () => {
+    loadSupportDiagnostics();
+    if (!unlockQuotes.usage && monitoredApps.length > 0) {
+      loadUnlockQuotes(monitoredApps[0].packageName);
+    }
+  };
+
+  const copyDiagnostics = () => {
+    const payload =
+      window.Android?.getSupportDiagnostics?.() ??
+      JSON.stringify(
+        {
+          generatedAt: Date.now(),
+          source: 'web-fallback',
+          activation,
+          stats,
+          monitoredApps: monitoredApps.map(app => app.packageName),
+        },
+        null,
+        2,
+      );
+
+    writeTextToClipboard(payload)
+      .then(() => {
+        setSupportCopyState('copied');
+        loadSupportDiagnostics();
+      })
+      .catch(() => {
+        setSupportCopyState('failed');
+      })
+      .finally(() => {
+        window.setTimeout(() => setSupportCopyState('idle'), 2200);
+      });
+  };
+
   const resumeFlow = () => {
     const next = refreshActivation();
     if (next) {
@@ -1717,10 +1948,15 @@ export default function App() {
               stats={stats}
               weeklyData={weeklyData}
               activation={activation}
+              supportDiagnostics={supportDiagnostics}
+              supportCopyState={supportCopyState}
+              unlockQuotes={unlockQuotes}
               openManagement={openManagement}
               openRepair={() => setStep('repair')}
               toggleStrictMode={toggleStrictMode}
               refreshProtection={refreshProtection}
+              refreshDiagnostics={refreshDiagnostics}
+              copyDiagnostics={copyDiagnostics}
             />
           )}
         </motion.div>

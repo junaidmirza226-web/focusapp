@@ -22,6 +22,7 @@ import org.json.JSONObject
 import java.io.ByteArrayOutputStream
 import java.lang.ref.WeakReference
 import java.util.Calendar
+import java.util.Date
 
 /**
  * Exposes Android functionality to the React WebView via window.Android.*
@@ -545,6 +546,75 @@ class FocusFineJavascriptInterface(
         }
     }
 
+    /**
+     * Returns a compact diagnostic bundle for support/recovery flows.
+     * This is intentionally on-demand so the UI can copy exact live state.
+     */
+    @JavascriptInterface
+    fun getSupportDiagnostics(): String {
+        return runBlocking(Dispatchers.IO) {
+            val now = System.currentTimeMillis()
+            val usageAccess = hasUsageAccess()
+            val overlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                Settings.canDrawOverlays(context)
+            } else {
+                true
+            }
+            val accessibility = hasAccessibilityServiceEnabled()
+            val hasCorePermissions = usageAccess && overlay && accessibility
+
+            val lastServiceCheckTime = prefs.lastServiceCheckTime
+            val heartbeatAgeMs = if (lastServiceCheckTime > 0L) {
+                (now - lastServiceCheckTime).coerceAtLeast(0L)
+            } else {
+                Long.MAX_VALUE
+            }
+            val serviceHealthy =
+                prefs.isMonitoringServiceRunning && heartbeatAgeMs <= 15_000L
+
+            val todayStart = getTodayStartMillis()
+            val monitoredApps = db.userSettingsDao().getAllSettings().filter { it.isEnabled }
+            val blockedNow = JSONArray()
+            monitoredApps.forEach { app ->
+                val evaluation = decisionEngine.evaluate(
+                    packageName = app.packageName,
+                    now = now,
+                    todayStartMillis = todayStart,
+                    rawUsageMinutesToday = getCurrentTotalUsageToday(app.packageName)
+                )
+                if (evaluation.decision != null && blockedNow.length() < 15) {
+                    blockedNow.put(app.packageName)
+                }
+            }
+
+            JSONObject().apply {
+                put("generatedAt", now)
+                put("generatedAtReadable", Date(now).toString())
+                put("appVersion", getAppVersionLabel())
+                put("androidSdk", Build.VERSION.SDK_INT)
+                put("deviceBrand", Build.BRAND ?: "unknown")
+                put("deviceModel", Build.MODEL ?: "unknown")
+                put("onboardingComplete", prefs.isOnboardingComplete)
+                put("strictMode", prefs.isStrictModeEnabled)
+                put("hasCorePermissions", hasCorePermissions)
+                put("permissions", JSONObject().apply {
+                    put("usageAccess", usageAccess)
+                    put("overlay", overlay)
+                    put("accessibility", accessibility)
+                })
+                put("service", JSONObject().apply {
+                    put("running", prefs.isMonitoringServiceRunning)
+                    put("healthy", serviceHealthy)
+                    put("lastCheckTime", lastServiceCheckTime)
+                    put("heartbeatAgeMs", if (heartbeatAgeMs == Long.MAX_VALUE) JSONObject.NULL else heartbeatAgeMs)
+                })
+                put("monitoredAppsCount", monitoredApps.size)
+                put("blockedNowCount", blockedNow.length())
+                put("blockedNowPackages", blockedNow)
+            }.toString()
+        }
+    }
+
     // ── Internal helpers ──────────────────────────────────────────────────────
 
     @JavascriptInterface
@@ -674,5 +744,29 @@ class FocusFineJavascriptInterface(
         val statsMap = usm.queryAndAggregateUsageStats(getTodayStartMillis(), now)
         val usage = statsMap?.get(packageName)
         return if (usage != null) usage.totalTimeInForeground / 1000L / 60L else 0L
+    }
+
+    private fun getAppVersionLabel(): String {
+        return try {
+            val packageInfo = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+                context.packageManager.getPackageInfo(
+                    context.packageName,
+                    android.content.pm.PackageManager.PackageInfoFlags.of(0L)
+                )
+            } else {
+                @Suppress("DEPRECATION")
+                context.packageManager.getPackageInfo(context.packageName, 0)
+            }
+            val versionName = packageInfo.versionName ?: "unknown"
+            val versionCode = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.P) {
+                packageInfo.longVersionCode
+            } else {
+                @Suppress("DEPRECATION")
+                packageInfo.versionCode.toLong()
+            }
+            "$versionName ($versionCode)"
+        } catch (_: Exception) {
+            "unknown"
+        }
     }
 }

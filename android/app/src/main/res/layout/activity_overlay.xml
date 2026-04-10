@@ -84,6 +84,18 @@
             android:gravity="center"
             android:visibility="gone" />
 
+        <TextView
+            android:id="@+id/unlock_pricing_hint"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginBottom="14dp"
+            android:textColor="#9CA3AF"
+            android:textSize="13sp"
+            android:gravity="center"
+            android:lineSpacingExtra="2dp"
+            android:text="Need a one-time override? Shorter unlocks cost less and repeated unlocks cost more."
+            android:visibility="gone" />
+
         <!-- ── Payment section ─────────────────────────────────────────────── -->
         <LinearLayout
             android:id="@+id/payment_section"

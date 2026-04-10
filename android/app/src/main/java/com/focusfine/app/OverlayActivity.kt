@@ -94,6 +94,7 @@ class OverlayActivity : AppCompatActivity() {
         val lockTitle = findViewById<TextView>(R.id.lock_title)
         val lockMessage = findViewById<TextView>(R.id.lock_message)
         val reasonHint = findViewById<TextView>(R.id.block_reason_hint)
+        val pricingHint = findViewById<TextView>(R.id.unlock_pricing_hint)
 
         when (blockReason) {
             BlockReason.TIME_BLOCK -> {
@@ -105,11 +106,15 @@ class OverlayActivity : AppCompatActivity() {
                 } else {
                     "Time block is active"
                 }
+                pricingHint.text =
+                    "Schedule overrides are premium by design. Use only for true exceptions."
             }
             BlockReason.USAGE_LIMIT -> {
                 lockTitle.text = "Allowance Spent"
                 lockMessage.text = "Today's allowance for $appName is gone."
                 reasonHint.visibility = View.GONE
+                pricingHint.text =
+                    "Need emergency time? Start small. Repeated unlocks increase in price."
             }
         }
 
@@ -162,22 +167,26 @@ class OverlayActivity : AppCompatActivity() {
     private fun refreshLockModeUi() {
         val paymentSection = findViewById<LinearLayout>(R.id.payment_section)
         val strictBanner = findViewById<TextView>(R.id.strict_mode_banner)
+        val pricingHint = findViewById<TextView>(R.id.unlock_pricing_hint)
 
         when {
             isStrictMode -> {
                 paymentSection.visibility = View.GONE
+                pricingHint.visibility = View.GONE
                 strictBanner.visibility = View.VISIBLE
                 strictBanner.setTextColor(Color.parseColor("#EF4444"))
                 strictBanner.text = "Strict Mode is active.\nUnlock stays disabled until this rule clears."
             }
             purchasesUnavailable -> {
                 paymentSection.visibility = View.GONE
+                pricingHint.visibility = View.GONE
                 strictBanner.visibility = View.VISIBLE
                 strictBanner.setTextColor(Color.parseColor("#F59E0B"))
                 strictBanner.text = "Unlock purchases are unavailable on this device.\nThe barrier will stay in place."
             }
             else -> {
                 paymentSection.visibility = View.VISIBLE
+                pricingHint.visibility = View.VISIBLE
                 strictBanner.visibility = View.GONE
             }
         }
@@ -224,7 +233,7 @@ class OverlayActivity : AppCompatActivity() {
                 }
 
                 findViewById<Button>(R.id.btn_pay).apply {
-                    text = "Pay \$$quickPrice.00 — 15 min"
+                    text = "Emergency 15m — \$$quickPrice.00"
                     setOnClickListener {
                         if (!isProcessing) {
                             isProcessing = true
@@ -241,7 +250,7 @@ class OverlayActivity : AppCompatActivity() {
                 }
 
                 findViewById<Button>(R.id.btn_extended_unlock).apply {
-                    text = "Pay \$$extendedPrice.00 — 1 hour"
+                    text = "Deep work break (1h) — \$$extendedPrice.00"
                     setOnClickListener {
                         if (!isProcessing) {
                             isProcessing = true
@@ -258,7 +267,7 @@ class OverlayActivity : AppCompatActivity() {
                 }
 
                 findViewById<Button>(R.id.btn_daily_pass).apply {
-                    text = "Pay \$$dailyPrice.00 — Full day"
+                    text = "Full day exception — \$$dailyPrice.00"
                     setOnClickListener {
                         if (!isProcessing) {
                             isProcessing = true
