@@ -374,7 +374,11 @@ class UsageMonitorService : Service() {
                     // Tapping the floating overlay counts as a USER INTERACTION! 
                     // This grants us immediate permission to launch our Payment Activity from the background!
                     val intent = Intent(this@UsageMonitorService, OverlayActivity::class.java).apply {
-                        addFlags(Intent.FLAG_ACTIVITY_NEW_TASK or Intent.FLAG_ACTIVITY_CLEAR_TASK)
+                        addFlags(
+                            Intent.FLAG_ACTIVITY_NEW_TASK or
+                                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                                Intent.FLAG_ACTIVITY_SINGLE_TOP
+                        )
                         putExtra("LOCKED_PACKAGE", target.packageName)
                         putExtra("APP_NAME", target.appName)
                         putExtra("STRICT_MODE", false)
@@ -468,21 +472,7 @@ class UsageMonitorService : Service() {
     override fun onTaskRemoved(rootIntent: Intent?) {
         Log.w(TAG, "App task removed; requesting monitor service restart")
         DiagnosticsTimeline.record(source = TAG, event = "task_removed_restart_requested")
-        try {
-            ServiceRestartReceiver.schedule(
-                context = applicationContext,
-                delayMs = 600L,
-                reason = "task_removed"
-            )
-            val restartIntent = Intent(applicationContext, UsageMonitorService::class.java)
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                startForegroundService(restartIntent)
-            } else {
-                startService(restartIntent)
-            }
-        } catch (e: Exception) {
-            Log.e(TAG, "Failed to restart monitor service after task removal", e)
-        }
+        requestSelfHeal(reason = "task_removed", delayMs = 600L)
         super.onTaskRemoved(rootIntent)
     }
 
@@ -493,31 +483,50 @@ class UsageMonitorService : Service() {
         FocusFineApp.preferences.isMonitoringServiceRunning = false
         FocusFineApp.preferences.lastServiceCheckTime = System.currentTimeMillis()
         if (FocusFineApp.preferences.isOnboardingComplete) {
-            try {
-                DiagnosticsTimeline.record(source = TAG, event = "monitor_destroyed_restart_requested")
-                ServiceRestartReceiver.schedule(
-                    context = applicationContext,
-                    delayMs = 800L,
-                    reason = "service_destroyed"
-                )
-                val restartIntent = Intent(applicationContext, UsageMonitorService::class.java)
-                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-                    startForegroundService(restartIntent)
-                } else {
-                    startService(restartIntent)
-                }
-                Log.w(TAG, "Service destroyed unexpectedly; restart requested")
-            } catch (e: Exception) {
-                Log.e(TAG, "Failed to self-heal after service destroy", e)
-                DiagnosticsTimeline.record(
-                    source = TAG,
-                    event = "monitor_destroyed_restart_failed",
-                    details = e.javaClass.simpleName
-                )
-            }
+            requestSelfHeal(reason = "service_destroyed", delayMs = 800L)
         }
         DiagnosticsTimeline.record(source = TAG, event = "monitor_service_destroyed")
         Log.d(TAG, "Service destroyed")
+    }
+
+    private fun requestSelfHeal(reason: String, delayMs: Long) {
+        DiagnosticsTimeline.record(
+            source = TAG,
+            event = "monitor_restart_requested",
+            details = "reason=$reason"
+        )
+
+        try {
+            ServiceRestartReceiver.schedule(
+                context = applicationContext,
+                delayMs = delayMs,
+                reason = reason
+            )
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to schedule monitor restart ($reason)", e)
+            DiagnosticsTimeline.record(
+                source = TAG,
+                event = "monitor_restart_schedule_failed",
+                details = "reason=$reason ${e.javaClass.simpleName}"
+            )
+        }
+
+        try {
+            val restartIntent = Intent(applicationContext, UsageMonitorService::class.java)
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
+                startForegroundService(restartIntent)
+            } else {
+                startService(restartIntent)
+            }
+            Log.w(TAG, "Service self-heal start requested ($reason)")
+        } catch (e: Exception) {
+            Log.e(TAG, "Failed to self-heal monitor service ($reason)", e)
+            DiagnosticsTimeline.record(
+                source = TAG,
+                event = "monitor_restart_start_failed",
+                details = "reason=$reason ${e.javaClass.simpleName}"
+            )
+        }
     }
 
     override fun onBind(intent: Intent?): IBinder? = null

@@ -16,6 +16,7 @@ import kotlinx.coroutines.CoroutineScope
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.SupervisorJob
+import kotlinx.coroutines.CancellationException
 import kotlinx.coroutines.cancel
 import kotlinx.coroutines.launch
 import kotlinx.coroutines.withContext
@@ -210,9 +211,14 @@ class FocusFineAccessibilityService : AccessibilityService() {
             return
         }
 
-        evaluationJobs.remove(pkg)?.cancel()
+        val runningJob = evaluationJobs[pkg]
+        if (runningJob?.isActive == true) {
+            // Avoid cancel/relaunch thrash on event storms (notably Chrome first-run on API 34).
+            // Let one evaluation complete, then the next event can enqueue a fresh decision.
+            return
+        }
         val evaluationJob = serviceScope.launch {
-            val runningJob = coroutineContext[Job]
+            val thisJob = coroutineContext[Job]
             try {
                 val blockDecision = evaluateBlockingState(pkg, now)
 
@@ -244,11 +250,13 @@ class FocusFineAccessibilityService : AccessibilityService() {
                     FocusFineApp.lockedPackageNames.remove(pkg)
                     clearDecision(pkg)
                 }
+            } catch (_: CancellationException) {
+                // Ignore normal cancellation when service is shutting down.
             } catch (t: Throwable) {
                 Log.e(TAG, "Failed to process accessibility event for $pkg", t)
             } finally {
-                if (runningJob != null) {
-                    evaluationJobs.remove(pkg, runningJob)
+                if (thisJob != null) {
+                    evaluationJobs.remove(pkg, thisJob)
                 } else {
                     evaluationJobs.remove(pkg)
                 }
@@ -389,7 +397,8 @@ class FocusFineAccessibilityService : AccessibilityService() {
         val intent = Intent(this, OverlayActivity::class.java).apply {
             addFlags(
                 Intent.FLAG_ACTIVITY_NEW_TASK or
-                Intent.FLAG_ACTIVITY_CLEAR_TASK or
+                Intent.FLAG_ACTIVITY_CLEAR_TOP or
+                Intent.FLAG_ACTIVITY_SINGLE_TOP or
                 Intent.FLAG_ACTIVITY_NO_ANIMATION
             )
             putExtra("LOCKED_PACKAGE", packageName)

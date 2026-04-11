@@ -56,19 +56,56 @@ class ServiceRestartReceiver : BroadcastReceiver() {
                 PendingIntent.FLAG_UPDATE_CURRENT or PendingIntent.FLAG_IMMUTABLE
             )
 
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
-                alarmManager.setExactAndAllowWhileIdle(
-                    AlarmManager.RTC_WAKEUP,
-                    triggerAt,
-                    pendingIntent
-                )
-            } else {
-                alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
+            val usedExactAlarm = try {
+                when {
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.S -> {
+                        if (alarmManager.canScheduleExactAlarms()) {
+                            alarmManager.setExactAndAllowWhileIdle(
+                                AlarmManager.RTC_WAKEUP,
+                                triggerAt,
+                                pendingIntent
+                            )
+                            true
+                        } else {
+                            alarmManager.setAndAllowWhileIdle(
+                                AlarmManager.RTC_WAKEUP,
+                                triggerAt,
+                                pendingIntent
+                            )
+                            false
+                        }
+                    }
+                    Build.VERSION.SDK_INT >= Build.VERSION_CODES.M -> {
+                        alarmManager.setExactAndAllowWhileIdle(
+                            AlarmManager.RTC_WAKEUP,
+                            triggerAt,
+                            pendingIntent
+                        )
+                        true
+                    }
+                    else -> {
+                        alarmManager.setExact(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
+                        true
+                    }
+                }
+            } catch (security: SecurityException) {
+                // Android 12+ may reject exact alarms without explicit capability; fall back.
+                if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M) {
+                    alarmManager.setAndAllowWhileIdle(
+                        AlarmManager.RTC_WAKEUP,
+                        triggerAt,
+                        pendingIntent
+                    )
+                } else {
+                    alarmManager.set(AlarmManager.RTC_WAKEUP, triggerAt, pendingIntent)
+                }
+                Log.w(TAG, "Exact-alarm restart not allowed; used inexact fallback", security)
+                false
             }
             DiagnosticsTimeline.record(
                 source = TAG,
                 event = "restart_scheduled",
-                details = "reason=$reason delayMs=${triggerAt - System.currentTimeMillis()}"
+                details = "reason=$reason delayMs=${triggerAt - System.currentTimeMillis()} exact=$usedExactAlarm"
             )
             Log.d(TAG, "Scheduled UsageMonitorService restart in ${triggerAt - System.currentTimeMillis()}ms ($reason)")
         }
