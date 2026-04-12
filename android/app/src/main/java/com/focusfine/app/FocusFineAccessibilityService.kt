@@ -37,7 +37,7 @@ class FocusFineAccessibilityService : AccessibilityService() {
     companion object {
         private const val TAG = "FocusFineA11y"
         // Keep anti-loop debounce tight so hostile rapid reopens are still intercepted.
-        private const val REDIRECT_DEBOUNCE_MS = 120L
+        private const val REDIRECT_DEBOUNCE_MS = 350L
         private const val EVENT_DEBOUNCE_MS = 50L
         private const val FAST_PATH_CACHE_MS = 1500L
 
@@ -377,6 +377,17 @@ class FocusFineAccessibilityService : AccessibilityService() {
         eventObservedAt: Long
     ) {
         val now = System.currentTimeMillis()
+
+        if (
+            OverlayActivity.isShowingForPackage(packageName) &&
+            packageName == lastRedirectedPackage &&
+            (now - lastRedirectAt) < 900L
+        ) {
+            // Overlay is already active for this package; avoid startActivity storms that can
+            // destabilize some target apps during rapid hostile reopen attempts.
+            return
+        }
+
         if (packageName == lastRedirectedPackage && (now - lastRedirectAt) < REDIRECT_DEBOUNCE_MS) {
             return
         }

@@ -31,6 +31,16 @@ class OverlayActivity : AppCompatActivity() {
 
         @Volatile
         private var billingDisabledForProcess = false
+
+        @Volatile
+        private var isOverlayVisible = false
+
+        @Volatile
+        private var visibleLockedPackage: String? = null
+
+        fun isShowingForPackage(packageName: String): Boolean {
+            return isOverlayVisible && visibleLockedPackage == packageName
+        }
     }
 
     private lateinit var lockedPackage: String
@@ -90,6 +100,7 @@ class OverlayActivity : AppCompatActivity() {
         unlockScope = parseUnlockScope(intent.getStringExtra("UNLOCK_SCOPE"))
         val endsAt = intent.getLongExtra("BLOCK_ENDS_AT", -1L)
         blockEndsAt = if (endsAt > 0L) endsAt else null
+        visibleLockedPackage = lockedPackage
 
         val lockTitle = findViewById<TextView>(R.id.lock_title)
         val lockMessage = findViewById<TextView>(R.id.lock_message)
@@ -349,8 +360,23 @@ class OverlayActivity : AppCompatActivity() {
         // Prevent bypass via back button — user must pay or go home
     }
 
+    override fun onStart() {
+        super.onStart()
+        isOverlayVisible = true
+        visibleLockedPackage = lockedPackage
+    }
+
+    override fun onStop() {
+        super.onStop()
+        isOverlayVisible = false
+    }
+
     override fun onDestroy() {
         super.onDestroy()
+        if (visibleLockedPackage == lockedPackage) {
+            visibleLockedPackage = null
+        }
+        isOverlayVisible = false
         paymentManager?.disconnect()
     }
 }
