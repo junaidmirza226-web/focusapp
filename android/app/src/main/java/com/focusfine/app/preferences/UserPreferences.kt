@@ -60,6 +60,14 @@ class UserPreferences(context: Context) {
         get() = prefs.getLong(KEY_LAST_SERVICE_CHECK, 0)
         set(value) = prefs.edit().putLong(KEY_LAST_SERVICE_CHECK, value).apply()
 
+    var isAccessibilityServiceBound: Boolean
+        get() = prefs.getBoolean(KEY_ACCESSIBILITY_BOUND, false)
+        set(value) = prefs.edit().putBoolean(KEY_ACCESSIBILITY_BOUND, value).apply()
+
+    var lastAccessibilityBindTime: Long
+        get() = prefs.getLong(KEY_LAST_ACCESSIBILITY_BIND, 0)
+        set(value) = prefs.edit().putLong(KEY_LAST_ACCESSIBILITY_BIND, value).apply()
+
     fun clearAllData() {
         prefs.edit().clear().apply()
     }
@@ -77,5 +85,7 @@ class UserPreferences(context: Context) {
         private const val KEY_STREAK = "streak_days"
         private const val KEY_SERVICE_RUNNING = "service_running"
         private const val KEY_LAST_SERVICE_CHECK = "last_service_check"
+        private const val KEY_ACCESSIBILITY_BOUND = "accessibility_bound"
+        private const val KEY_LAST_ACCESSIBILITY_BIND = "last_accessibility_bind"
     }
 }

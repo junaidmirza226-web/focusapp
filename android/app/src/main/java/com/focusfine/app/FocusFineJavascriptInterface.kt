@@ -51,9 +51,12 @@ class FocusFineJavascriptInterface(
         val overlay = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.M)
             Settings.canDrawOverlays(context) else true
         val accessibility = hasAccessibilityServiceEnabled()
+        val accessibilityBound = prefs.isAccessibilityServiceBound
+        val accessibilityHealthy = accessibility && accessibilityBound
         val hasCorePermissions = usageAccess && overlay && accessibility
         val now = System.currentTimeMillis()
         val lastServiceCheckTime = prefs.lastServiceCheckTime
+        val lastAccessibilityBindTime = prefs.lastAccessibilityBindTime
         val heartbeatAgeMs = if (lastServiceCheckTime > 0L) {
             (now - lastServiceCheckTime).coerceAtLeast(0L)
         } else {
@@ -61,17 +64,25 @@ class FocusFineJavascriptInterface(
         }
         val monitoringServiceHealthy =
             prefs.isMonitoringServiceRunning && heartbeatAgeMs <= 15_000L
+        val needsRepair = prefs.isOnboardingComplete &&
+            (!hasCorePermissions || !accessibilityHealthy || !monitoringServiceHealthy)
         return JSONObject().apply {
             put("usageAccess", usageAccess)
             put("overlay", overlay)
             put("accessibility", accessibility)
+            put("accessibilityBound", accessibilityBound)
+            put("accessibilityHealthy", accessibilityHealthy)
             put("onboardingComplete", prefs.isOnboardingComplete)
             put("hasCorePermissions", hasCorePermissions)
             put("monitoringServiceRunning", prefs.isMonitoringServiceRunning)
             put("monitoringServiceHealthy", monitoringServiceHealthy)
             put("lastServiceCheckTime", lastServiceCheckTime)
             put("heartbeatAgeMs", if (heartbeatAgeMs == Long.MAX_VALUE) JSONObject.NULL else heartbeatAgeMs)
-            put("needsRepair", prefs.isOnboardingComplete && !hasCorePermissions)
+            put(
+                "lastAccessibilityBindTime",
+                if (lastAccessibilityBindTime > 0L) lastAccessibilityBindTime else JSONObject.NULL
+            )
+            put("needsRepair", needsRepair)
             put("strictMode", prefs.isStrictModeEnabled)
         }.toString()
     }
@@ -667,6 +678,8 @@ class FocusFineJavascriptInterface(
                 true
             }
             val accessibility = hasAccessibilityServiceEnabled()
+            val accessibilityBound = prefs.isAccessibilityServiceBound
+            val accessibilityHealthy = accessibility && accessibilityBound
             val hasCorePermissions = usageAccess && overlay && accessibility
             val heartbeatAgeMs = if (prefs.lastServiceCheckTime > 0L) {
                 (now - prefs.lastServiceCheckTime).coerceAtLeast(0L)
@@ -681,7 +694,7 @@ class FocusFineJavascriptInterface(
             val latencyMax = redirectLatencies.maxOrNull()
 
             val reliabilityTier = when {
-                !hasCorePermissions || !serviceHealthy -> "REPAIR_REQUIRED"
+                !hasCorePermissions || !accessibilityHealthy || !serviceHealthy -> "REPAIR_REQUIRED"
                 overlayLaunchFailures24h > 0 || restartRecoveryFailures24h > 0 -> "UNSTABLE"
                 (latencyP95 ?: 0L) > 300L || monitorSlowTicks24h >= 4 -> "DEGRADED"
                 else -> "HARDENED"
@@ -708,6 +721,8 @@ class FocusFineJavascriptInterface(
                     "Android force-stop is an OS kill switch. Recents swipe is hardened, but force-stop still requires user re-entry."
                 )
                 put("hasCorePermissions", hasCorePermissions)
+                put("accessibilityHealthy", accessibilityHealthy)
+                put("accessibilityBound", accessibilityBound)
                 put("serviceHealthy", serviceHealthy)
                 put("restartRecoveryAttempts24h", restartRecoveryAttempts24h)
                 put("restartRecoveryFailures24h", restartRecoveryFailures24h)
@@ -739,6 +754,8 @@ class FocusFineJavascriptInterface(
                 true
             }
             val accessibility = hasAccessibilityServiceEnabled()
+            val accessibilityBound = prefs.isAccessibilityServiceBound
+            val accessibilityHealthy = accessibility && accessibilityBound
             val hasCorePermissions = usageAccess && overlay && accessibility
 
             val lastServiceCheckTime = prefs.lastServiceCheckTime
@@ -780,6 +797,8 @@ class FocusFineJavascriptInterface(
                     put("usageAccess", usageAccess)
                     put("overlay", overlay)
                     put("accessibility", accessibility)
+                    put("accessibilityBound", accessibilityBound)
+                    put("accessibilityHealthy", accessibilityHealthy)
                 })
                 put("service", JSONObject().apply {
                     put("running", prefs.isMonitoringServiceRunning)
@@ -873,14 +892,7 @@ class FocusFineJavascriptInterface(
     }
 
     private fun hasAccessibilityServiceEnabled(): Boolean {
-        val am = context.getSystemService(Context.ACCESSIBILITY_SERVICE)
-            as android.view.accessibility.AccessibilityManager
-        return am.getEnabledAccessibilityServiceList(
-            android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_ALL_MASK
-        ).any {
-            it.resolveInfo.serviceInfo.packageName == context.packageName &&
-            it.resolveInfo.serviceInfo.name == FocusFineAccessibilityService::class.java.name
-        }
+        return AccessibilityGrantState.isServiceEnabled(context)
     }
 
     private fun hasUsageAccess(): Boolean {

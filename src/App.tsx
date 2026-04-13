@@ -70,6 +70,8 @@ type PermissionsState = {
 interface ActivationState extends PermissionsState {
   onboardingComplete: boolean;
   hasCorePermissions: boolean;
+  accessibilityBound: boolean;
+  accessibilityHealthy: boolean;
   monitoringServiceRunning: boolean;
   monitoringServiceHealthy: boolean;
   lastServiceCheckTime: number;
@@ -217,6 +219,8 @@ const DEFAULT_ACTIVATION: ActivationState = {
   ...DEFAULT_PERMS,
   onboardingComplete: false,
   hasCorePermissions: false,
+  accessibilityBound: false,
+  accessibilityHealthy: false,
   monitoringServiceRunning: false,
   monitoringServiceHealthy: false,
   lastServiceCheckTime: 0,
@@ -665,7 +669,7 @@ const RepairView = ({
     window.setTimeout(() => {
       window.clearInterval(interval);
       const next = refreshActivation();
-      if (next?.onboardingComplete && next.hasCorePermissions) {
+      if (next?.onboardingComplete && next.hasCorePermissions && !next.needsRepair) {
         resumeFlow();
       }
     }, 5_500);
@@ -692,9 +696,9 @@ const RepairView = ({
       key: 'accessibility',
       title: 'Accessibility intercept',
       description: 'Catches recents taps, app relaunches, and fast reopen attempts.',
-      isHealthy: activation.accessibility,
+      isHealthy: activation.accessibilityHealthy,
       action: () => launchAndPoll(() => window.Android?.requestAccessibilityService()),
-      buttonLabel: activation.accessibility ? 'Granted' : 'Restore',
+      buttonLabel: activation.accessibilityHealthy ? 'Healthy' : 'Restore',
     },
     {
       key: 'service',
@@ -1620,6 +1624,8 @@ export default function App() {
         accessibility: Boolean(parsed.accessibility),
         onboardingComplete: Boolean(parsed.onboardingComplete),
         hasCorePermissions: Boolean(parsed.hasCorePermissions ?? (parsed.usageAccess && parsed.overlay && parsed.accessibility)),
+        accessibilityBound: Boolean(parsed.accessibilityBound),
+        accessibilityHealthy: Boolean(parsed.accessibilityHealthy ?? (parsed.accessibility && parsed.accessibilityBound)),
         monitoringServiceRunning: Boolean(parsed.monitoringServiceRunning),
         monitoringServiceHealthy: Boolean(parsed.monitoringServiceHealthy),
         lastServiceCheckTime: Number(parsed.lastServiceCheckTime ?? 0),
@@ -1705,7 +1711,7 @@ export default function App() {
   const routeFromActivation = useCallback(
     (next: ActivationState) => {
       if (next.onboardingComplete) {
-        if (next.hasCorePermissions) {
+        if (next.hasCorePermissions && !next.needsRepair) {
           window.Android?.ensureMonitoringService?.();
           const apps = readPolicies();
           setStep(apps.length > 0 ? 'dashboard' : 'setup');

@@ -33,6 +33,9 @@ class FocusFineApp : Application() {
         super.onCreate()
         database = AppDatabase.getInstance(this)
         preferences = UserPreferences(this)
+        // Process-local health flags must be reset on every fresh process start.
+        preferences.isMonitoringServiceRunning = false
+        preferences.isAccessibilityServiceBound = false
         createNotificationChannels()
         DiagnosticsTimeline.record(
             source = "FocusFineApp",

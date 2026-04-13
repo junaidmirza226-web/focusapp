@@ -157,6 +157,8 @@ class FocusFineAccessibilityService : AccessibilityService() {
 
     override fun onServiceConnected() {
         activeInstance = this
+        FocusFineApp.preferences.isAccessibilityServiceBound = true
+        FocusFineApp.preferences.lastAccessibilityBindTime = System.currentTimeMillis()
         serviceInfo = AccessibilityServiceInfo().apply {
             // Listen for both traditional window-state changes and OEM variants that
             // only emit windows-changed events during app transitions.
@@ -179,6 +181,8 @@ class FocusFineAccessibilityService : AccessibilityService() {
     }
 
     override fun onAccessibilityEvent(event: AccessibilityEvent) {
+        FocusFineApp.preferences.isAccessibilityServiceBound = true
+        FocusFineApp.preferences.lastAccessibilityBindTime = System.currentTimeMillis()
         ensureUsageMonitorServiceRunning()
 
         if (
@@ -266,6 +270,7 @@ class FocusFineAccessibilityService : AccessibilityService() {
     }
 
     override fun onInterrupt() {
+        FocusFineApp.preferences.isAccessibilityServiceBound = false
         ActivationStateNotifier.broadcast(this)
         DiagnosticsTimeline.record(source = TAG, event = "service_interrupted")
         Log.d(TAG, "Accessibility service interrupted")
@@ -276,6 +281,7 @@ class FocusFineAccessibilityService : AccessibilityService() {
         if (activeInstance === this) {
             activeInstance = null
         }
+        FocusFineApp.preferences.isAccessibilityServiceBound = false
         serviceScope.cancel()
         ActivationStateNotifier.broadcast(this)
         DiagnosticsTimeline.record(source = TAG, event = "service_destroyed")

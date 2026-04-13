@@ -14,7 +14,6 @@ import android.os.SystemClock
 import android.provider.Settings
 import android.util.Log
 import android.view.View
-import android.view.accessibility.AccessibilityManager
 import android.webkit.WebView
 import android.webkit.WebViewClient
 import android.widget.Toast
@@ -209,14 +208,7 @@ class MainActivity : AppCompatActivity() {
     }
 
     fun hasAccessibilityServiceEnabled(): Boolean {
-        val am = getSystemService(Context.ACCESSIBILITY_SERVICE) as AccessibilityManager
-        val enabledServices = am.getEnabledAccessibilityServiceList(
-            android.accessibilityservice.AccessibilityServiceInfo.FEEDBACK_ALL_MASK
-        )
-        return enabledServices.any {
-            it.resolveInfo.serviceInfo.packageName == packageName &&
-            it.resolveInfo.serviceInfo.name == FocusFineAccessibilityService::class.java.name
-        }
+        return AccessibilityGrantState.isServiceEnabled(this)
     }
 
     private fun requestAccessibilityService() {
